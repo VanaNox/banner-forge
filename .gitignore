@@ -1,0 +1,14 @@
+node_modules/
+dist/
+samples/
+scratch/
+output/
+.playwright-cli/
+.tools/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+vitest.config.js
+vitest.config.d.ts
+.DS_Store
+Thumbs.db
