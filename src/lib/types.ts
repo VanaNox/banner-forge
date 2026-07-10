@@ -6,7 +6,6 @@ export interface ConversionOptions {
   landingUrl: string;
   admixerMode: AdmixerMode;
   umhAutoButton: boolean;
-  includePreviewIndex: boolean;
   targetPlatforms: TargetPlatform[];
 }
 

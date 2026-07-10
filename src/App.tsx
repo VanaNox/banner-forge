@@ -29,7 +29,6 @@ const initialOptions: ConversionOptions = {
   landingUrl: 'https://www.example.com/summer-sale',
   admixerMode: 'fullscreen',
   umhAutoButton: true,
-  includePreviewIndex: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
 
@@ -202,14 +201,7 @@ export function App() {
               onChange={(event) => updateOptions({ ...options, landingUrl: event.target.value })}
               placeholder="https://example.com"
             />
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={options.includePreviewIndex}
-                onChange={(event) => updateOptions({ ...options, includePreviewIndex: event.target.checked })}
-              />
-              Include preview.html in output zips
-            </label>
+            <p className="helper-note">Preview is generated in the app only. Exported platform zips stay validator-clean.</p>
           </section>
 
           <section className="mini-panel">
@@ -359,7 +351,7 @@ export function App() {
               <li>Entrypoint exists in every output zip</li>
               <li>Platform click hook is present</li>
               <li>macOS/system files are removed</li>
-              <li>conversion-manifest.json is included</li>
+              <li>No preview.html or conversion-manifest.json in production zips</li>
             </ul>
           </section>
 
@@ -439,7 +431,7 @@ export function App() {
                   <li>Check that metadata is filled immediately after upload.</li>
                   <li>Run Convert and confirm every selected platform has Success status.</li>
                   <li>Open Preview for each selected platform package.</li>
-                  <li>Open each zip and verify the entrypoint plus conversion-manifest.json.</li>
+                  <li>Open each zip and verify the platform entrypoint plus required API bridge.</li>
                   <li>Before trafficking, upload the zip to the target platform validator.</li>
                 </ol>
               </div>
@@ -495,6 +487,7 @@ function PlatformCard({ title, subtitle, enabled, isReady, isConverting, output,
 }
 
 function OutputRow({ output, onPreview }: { output: OutputPackage & { platform: TargetPlatform }; onPreview: (output: OutputPackage & { platform: TargetPlatform }) => Promise<void> }) {
+  const isValid = output.validation.every((check) => check.passed);
   return (
     <div className="output-row">
       <div className="output-name">
@@ -504,9 +497,9 @@ function OutputRow({ output, onPreview }: { output: OutputPackage & { platform: 
           <span>{output.fileName}</span>
         </div>
       </div>
-      <div className="output-status">
-        <CheckCircle2 size={16} />
-        <div><strong>Success</strong><span>Validated</span></div>
+      <div className={`output-status ${isValid ? '' : 'warning'}`}>
+        {isValid ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+        <div><strong>{isValid ? 'Success' : 'Review'}</strong><span>{isValid ? 'Checks passed' : 'Needs QA'}</span></div>
       </div>
       <span className="output-size">{formatBytes(output.sizeBytes)}</span>
       <div className="output-actions">

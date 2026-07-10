@@ -291,6 +291,13 @@ a {
   accent-color: #0a8786;
 }
 
+.helper-note {
+  margin: 10px 0 0;
+  color: #60717b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .preset-row {
   display: grid;
   grid-template-columns: 18px 1fr auto 18px;
@@ -793,6 +800,10 @@ a {
 .output-status {
   gap: 8px;
   color: #2d923c;
+}
+
+.output-status.warning {
+  color: #bd7b11;
 }
 
 .output-status strong {

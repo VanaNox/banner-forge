@@ -47,7 +47,6 @@ describe('transformHtml', () => {
       landingUrl: 'https://example.com/landing',
       admixerMode: 'fullscreen',
       umhAutoButton: true,
-      includePreviewIndex: true,
       targetPlatforms: ['umh', 'fusify', 'admixer']
     });
 
@@ -63,11 +62,10 @@ describe('transformHtml', () => {
       landingUrl: 'https://example.com/landing',
       admixerMode: 'fullscreen',
       umhAutoButton: true,
-      includePreviewIndex: true,
       targetPlatforms: ['umh', 'fusify', 'admixer']
     });
 
-    expect(html).toContain('//a4p.adpartner.pro/apstc/media-iframe.min.js');
+    expect(html).toContain('//a4p.adpartner.pro/adpartner-iframe.min.js');
     expect(html).toContain('adPartner.click');
     expect(html).toContain('src="frame 1.png"');
     expect(html).toContain('src="creative.js"');
@@ -79,7 +77,6 @@ describe('transformHtml', () => {
       landingUrl: 'https://example.com/landing',
       admixerMode: 'halfscreen',
       umhAutoButton: true,
-      includePreviewIndex: true,
       targetPlatforms: ['umh', 'fusify', 'admixer']
     });
 
@@ -105,6 +102,7 @@ describe('convertDv360Banner', () => {
     ]);
     expect(result.packages.every((pkg) => pkg.sizeBytes > 0)).toBe(true);
     expect(result.packages.every((pkg) => pkg.validation.length > 0)).toBe(true);
+    expect(result.packages.filter((pkg) => pkg.platform !== 'bundle').every((pkg) => pkg.validation.every((check) => check.passed))).toBe(true);
     expect(result.warnings.some((warning) => warning.includes('external resources'))).toBe(false);
   });
 
@@ -120,11 +118,19 @@ describe('convertDv360Banner', () => {
 
     expect(umhZip.file('index.html')).toBeTruthy();
     expect(fusifyZip.file('index.html')).toBeTruthy();
-    expect(fusifyZip.file('frame 1.png')).toBeTruthy();
+    expect(fusifyZip.file('frame1.png')).toBeTruthy();
     expect(fusifyZip.file('images/frame 1.png')).toBeNull();
     expect(admixerZip.file('body.html')).toBeTruthy();
     expect(admixerZip.file('js/body.js')).toBeTruthy();
-    expect(Object.keys(admixerZip.files).some((path) => path.startsWith('__MACOSX'))).toBe(false);
+    expect(await admixerZip.file('js/body.js')!.async('text')).toContain('globalHTML5Api.close(true)');
+    const allEntries = [
+      ...Object.keys(umhZip.files),
+      ...Object.keys(fusifyZip.files),
+      ...Object.keys(admixerZip.files)
+    ];
+    expect(allEntries.some((path) => path.startsWith('__MACOSX'))).toBe(false);
+    expect(allEntries.some((path) => /preview\.html|conversion-manifest\.json/i.test(path))).toBe(false);
+    expect(Object.keys(fusifyZip.files).filter((path) => !fusifyZip.files[path].dir).every((path) => !path.includes('/'))).toBe(true);
   });
 
   it('only builds selected target platforms', async () => {

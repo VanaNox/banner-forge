@@ -5,11 +5,19 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   landingUrl: 'https://www.google.com',
   admixerMode: 'fullscreen',
   umhAutoButton: true,
-  includePreviewIndex: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
 
 type TextMap = Map<string, string>;
+type AssetPathMap = Map<string, string>;
+
+interface AssetPlan {
+  files: Array<{
+    sourcePath: string;
+    outputPath: string;
+  }>;
+  pathMap: AssetPathMap;
+}
 
 interface SourceCreative {
   zip: JSZip;
@@ -83,38 +91,29 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
   const warnings: string[] = [];
   const entryName = platform === 'admixer' ? 'body.html' : 'index.html';
   const mode = platform === 'admixer' ? options.admixerMode : undefined;
-  const transformedHtml = transformHtml(source.entryHtml, platform, options);
-  const validation: ValidationCheck[] = [
-    { label: `${entryName} entrypoint`, passed: true },
-    { label: 'System files removed', passed: !source.rootFiles.some(isSystemFile) },
-    { label: 'Platform click hook', passed: hasPlatformClickHook(transformedHtml, platform) },
-    { label: 'Conversion manifest', passed: true }
-  ];
+  const assetPlan = buildAssetPlan(source, platform);
+  const transformedHtml = transformHtmlWithAssets(source.entryHtml, platform, options, assetPlan.pathMap);
+  const validation: ValidationCheck[] = [];
 
-  for (const sourcePath of source.rootFiles) {
-    const relativePath = stripBase(sourcePath, source.metadata.basePath);
-    if (!relativePath || isSystemFile(relativePath) || /\.html?$/i.test(relativePath)) {
-      continue;
-    }
+  for (const { sourcePath, outputPath } of assetPlan.files) {
     const entry = source.zip.file(sourcePath);
     if (entry) {
-      out.file(rewriteAssetPath(relativePath, platform), await entry.async('arraybuffer'));
+      out.file(outputPath, await entry.async('arraybuffer'));
     }
   }
 
   out.file(entryName, transformedHtml);
-  out.file('conversion-manifest.json', JSON.stringify(buildManifest(source.metadata, platform, options), null, 2));
-  if (options.includePreviewIndex) {
-    out.file('preview.html', buildPreviewIndex(entryName, labelPlatform(platform)));
-  }
 
   if (platform === 'admixer') {
     out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen'));
-    validation.push({ label: 'Admixer API bridge', passed: true });
   }
 
-  const sizeLimit = platform === 'admixer' ? 300_000 : 1_000_000;
   const blob = await out.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  const outputEntries = [...assetPlan.files.map((file) => file.outputPath), entryName, ...(platform === 'admixer' ? ['js/body.js'] : [])];
+  validation.push(...validatePlatformPackage(platform, outputEntries, transformedHtml, blob.size, entryName));
+  validation.filter((check) => !check.passed).forEach((check) => warnings.push(`${labelPlatform(platform)}: ${check.label}`));
+
+  const sizeLimit = platformSizeLimit(platform);
   if (blob.size > sizeLimit) {
     warnings.push(`${labelPlatform(platform)} package is ${(blob.size / 1024).toFixed(1)} KB; verify the platform weight limit before trafficking.`);
   }
@@ -144,10 +143,12 @@ async function buildBundle(outputs: OutputPackage[], sourceFileName: string): Pr
 }
 
 export function transformHtml(html: string, platform: TargetPlatform, options: ConversionOptions): string {
+  return transformHtmlWithAssets(html, platform, options, new Map());
+}
+
+function transformHtmlWithAssets(html: string, platform: TargetPlatform, options: ConversionOptions, assetPathMap: AssetPathMap): string {
   const landingUrl = escapeForScript(options.landingUrl || DEFAULT_OPTIONS.landingUrl);
-  const normalized = platform === 'fusify'
-    ? flattenAssetReferences(removeDv360PreviewScripts(html))
-    : removeDv360PreviewScripts(html);
+  const normalized = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
   const withClickTag = upsertClickTag(normalized, landingUrl);
 
   if (platform === 'umh') {
@@ -173,7 +174,7 @@ function buildAdmixerHtml(html: string, mode: AdmixerMode): string {
   const size = mode === 'fullscreen' ? 'width=device-width, initial-scale=1.0' : 'width=device-width, initial-scale=1.0, maximum-scale=1.0';
   const closeClass = mode === 'fullscreen' ? 'admix-close-button' : 'ad-close-button';
   const closeStyle = mode === 'fullscreen'
-    ? 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;'
+    ? 'position:absolute;width:20px;height:20px;left:0;top:0;z-index:9999;cursor:pointer;'
     : 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;';
 
   return `<!doctype html>
@@ -187,7 +188,7 @@ ${headInner}
 <div id="admixer-click-area" style="position:relative;width:100%;height:100%;">
 ${bodyInner}
 </div>
-<button class="${closeClass}" id="close" aria-label="Close ad" style="${closeStyle}">x</button>
+<div class="${closeClass}" id="close" aria-label="Close ad" style="${closeStyle}"></div>
 <script type="text/javascript" src="js/body.js"></script>
 </body>
 </html>`;
@@ -227,34 +228,16 @@ function buildAdmixerBodyJs(mode: AdmixerMode): string {
   clickArea.onclick = function (event) {
     prevent(event);
     globalHTML5Api.click('');
-    ${mode === 'fullscreen' ? 'globalHTML5Api.close(true);' : ''}
+    globalHTML5Api.close(true);
   };
 
   document.body.onselectstart = function () { return false; };
 });`;
 }
 
-function buildPreviewIndex(entryName: string, platformLabel: string): string {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${platformLabel} preview</title>
-<style>
-html,body{margin:0;width:100%;height:100%;background:#f4f6f6;font-family:Arial,sans-serif;}
-iframe{display:block;margin:24px auto;border:0;background:#fff;max-width:100%;}
-</style>
-</head>
-<body>
-<iframe src="${entryName}" width="100%" height="640" title="${platformLabel} creative preview"></iframe>
-</body>
-</html>`;
-}
-
 function wrapBodyWithFusifyClick(html: string): string {
   const withoutDirectOpen = html.replace(/window\.open\((?:window\.)?clickTag[^)]*\)/gi, 'window.adPartner && adPartner.click ? adPartner.click() : false');
-  const withScript = ensureHeadScript(withoutDirectOpen, '//a4p.adpartner.pro/apstc/media-iframe.min.js');
+  const withScript = ensureHeadScript(withoutDirectOpen, '//a4p.adpartner.pro/adpartner-iframe.min.js');
   const bodyInner = extractBodyInner(withScript);
   const wrapped = `<div id="adpartner-click-area" style="position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;" onclick="return window.adPartner && adPartner.click ? adPartner.click() : (window.open(window.clickTag, '_blank'), false);">
 ${bodyInner}
@@ -361,53 +344,169 @@ function replaceBodyInner(html: string, inner: string): string {
   return `<!doctype html><html><head></head><body>${inner}</body></html>`;
 }
 
+function buildAssetPlan(source: SourceCreative, platform: TargetPlatform): AssetPlan {
+  const files: AssetPlan['files'] = [];
+  const pathMap: AssetPathMap = new Map();
+  const usedOutputPaths = new Set<string>();
+
+  source.rootFiles.forEach((sourcePath) => {
+    const relativePath = stripBase(sourcePath, source.metadata.basePath);
+    if (!relativePath || isSystemFile(relativePath) || /\.html?$/i.test(relativePath)) {
+      return;
+    }
+
+    const extension = extensionForPath(relativePath);
+    if (!isAllowedAssetExtension(extension, platform)) {
+      return;
+    }
+
+    const outputPath = uniqueOutputPath(safeAssetPath(relativePath, platform), usedOutputPaths);
+    usedOutputPaths.add(outputPath.toLowerCase());
+    files.push({ sourcePath, outputPath });
+    pathMap.set(normalizePath(relativePath), outputPath);
+    pathMap.set(normalizePath(sourcePath), outputPath);
+    pathMap.set(basename(relativePath), platform === 'fusify' ? outputPath : basename(outputPath));
+  });
+
+  return { files, pathMap };
+}
+
+function validatePlatformPackage(platform: TargetPlatform, entries: string[], html: string, sizeBytes: number, entryName: string): ValidationCheck[] {
+  const checks: ValidationCheck[] = [
+    { label: `${entryName} is present at zip root`, passed: entries.includes(entryName) },
+    { label: 'No preview.html or conversion-manifest.json in production zip', passed: !entries.some((entry) => /(^|\/)(preview\.html|conversion-manifest\.json)$/i.test(entry)) },
+    { label: 'No macOS/system files', passed: !entries.some(isSystemFile) },
+    { label: 'Only platform-supported file extensions', passed: entries.every((entry) => isAllowedEntryExtension(entry, platform)) },
+    { label: 'Platform click API is wired', passed: hasPlatformClickHook(html, platform) },
+    { label: `Package is under ${(platformSizeLimit(platform) / 1000).toFixed(0)} KB`, passed: sizeBytes <= platformSizeLimit(platform) }
+  ];
+
+  if (platform === 'umh') {
+    checks.push(
+      { label: 'UMH required ad.type/ad.size/ad.vars metadata is present', passed: /<meta\s+name=["']ad\.type["'][^>]+content=["']banner["']/i.test(html) && /<meta\s+name=["']ad\.size["']/i.test(html) && /<meta\s+name=["']ad\.vars["']/i.test(html) },
+      { label: 'UMH file names contain no spaces or non-latin characters', passed: entries.every(hasPlatformSafeName) }
+    );
+  }
+
+  if (platform === 'fusify') {
+    checks.push(
+      { label: 'Fusify/AdPartner archive has no folders', passed: entries.every((entry) => !entry.includes('/')) },
+      { label: 'AdPartner iframe bridge is connected', passed: /a4p\.adpartner\.pro\/adpartner-iframe\.min\.js/i.test(html) }
+    );
+  }
+
+  if (platform === 'admixer') {
+    checks.push(
+      { label: 'Admixer body.js API bridge is present', passed: entries.includes('js/body.js') },
+      { label: 'Admixer globalHTML5Api load/init/click/close flow is present', passed: /globalHTML5Api/i.test(html) || entries.includes('js/body.js') }
+    );
+  }
+
+  return checks;
+}
+
 function adSizeContent(html: string): string {
   const { width, height } = extractAdSize(html);
   return width && height ? `width=${width},height=${height}` : 'width=300,height=600';
-}
-
-function buildManifest(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions) {
-  return {
-    generatedBy: 'Banner Forge',
-    platform,
-    sourceFileName: metadata.sourceFileName,
-    sourceEntry: metadata.entryPath,
-    sourceBasePath: metadata.basePath,
-    width: metadata.width,
-    height: metadata.height,
-    landingUrl: options.landingUrl,
-    admixerMode: platform === 'admixer' ? options.admixerMode : undefined,
-    umhAutoButton: platform === 'umh' ? options.umhAutoButton : undefined,
-    notes: [
-      'Generated from a DV360 HTML5 zip.',
-      'Review platform-specific weight limits and external resource policies before trafficking.'
-    ]
-  };
 }
 
 function stripBase(path: string, basePath: string): string {
   return basePath && path.startsWith(`${basePath}/`) ? path.slice(basePath.length + 1) : path;
 }
 
-function rewriteAssetPath(path: string, platform: TargetPlatform): string {
+function safeAssetPath(path: string, platform: TargetPlatform): string {
   if (platform === 'fusify') {
-    return basename(path);
+    return safeFileName(basename(path));
   }
-  return path;
+  return normalizePath(path).split('/').map((segment, index, parts) => {
+    return index === parts.length - 1 ? safeFileName(segment) : safeDirectoryName(segment);
+  }).join('/');
 }
 
-function flattenAssetReferences(html: string): string {
+function rewriteAssetReferences(html: string, assetPathMap: AssetPathMap, platform: TargetPlatform): string {
   return html.replace(/((?:src|href)=["'])([^"']+)(["'])/gi, (_match, prefix: string, url: string, suffix: string) => {
     if (isExternalUrl(url) || url.startsWith('#') || url.startsWith('data:')) {
       return `${prefix}${url}${suffix}`;
     }
-    return `${prefix}${basename(url)}${suffix}`;
+    return `${prefix}${resolveOutputAssetPath(url, assetPathMap, platform)}${suffix}`;
   }).replace(/url\((['"]?)([^'")]+)\1\)/gi, (_match, quote: string, url: string) => {
     if (isExternalUrl(url) || url.startsWith('data:')) {
       return `url(${quote}${url}${quote})`;
     }
-    return `url(${quote}${basename(url)}${quote})`;
+    return `url(${quote}${resolveOutputAssetPath(url, assetPathMap, platform)}${quote})`;
   });
+}
+
+function resolveOutputAssetPath(url: string, assetPathMap: AssetPathMap, platform: TargetPlatform): string {
+  const { path, suffix } = splitUrlSuffix(normalizePath(url));
+  const resolved = assetPathMap.get(path) || assetPathMap.get(basename(path));
+  if (resolved) return `${resolved}${suffix}`;
+  return `${platform === 'fusify' ? basename(path) : path}${suffix}`;
+}
+
+function splitUrlSuffix(value: string): { path: string; suffix: string } {
+  const match = value.match(/^([^?#]+)([?#].*)?$/);
+  return { path: match?.[1] || value, suffix: match?.[2] || '' };
+}
+
+function isAllowedEntryExtension(path: string, platform: TargetPlatform): boolean {
+  return isAllowedAssetExtension(extensionForPath(path), platform);
+}
+
+function isAllowedAssetExtension(extension: string, platform: TargetPlatform): boolean {
+  if (!extension) return false;
+  if (platform === 'umh') {
+    return ['css', 'js', 'gif', 'png', 'jpg', 'jpeg', 'svg', 'html', 'json', 'xml'].includes(extension);
+  }
+  if (platform === 'fusify') {
+    return ['css', 'js', 'gif', 'png', 'jpg', 'jpeg', 'svg', 'html', 'json', 'xml', 'webm', 'mp4', 'woff', 'woff2', 'ttf', 'otf', 'eot'].includes(extension);
+  }
+  return ['css', 'js', 'gif', 'png', 'jpg', 'jpeg', 'svg', 'html', 'json', 'xml', 'webm', 'mp4', 'woff', 'woff2', 'ttf', 'otf', 'eot'].includes(extension);
+}
+
+function platformSizeLimit(platform: TargetPlatform): number {
+  if (platform === 'umh' || platform === 'fusify') return 500_000;
+  return 1_000_000;
+}
+
+function uniqueOutputPath(path: string, used: Set<string>): string {
+  if (!used.has(path.toLowerCase())) return path;
+  const dir = dirname(path);
+  const file = basename(path);
+  const extension = extensionForPath(file);
+  const stem = extension ? file.slice(0, -(extension.length + 1)) : file;
+  let index = 2;
+  while (true) {
+    const nextName = `${stem}${index}${extension ? `.${extension}` : ''}`;
+    const nextPath = dir ? `${dir}/${nextName}` : nextName;
+    if (!used.has(nextPath.toLowerCase())) return nextPath;
+    index += 1;
+  }
+}
+
+function safeDirectoryName(value: string): string {
+  return safeNamePart(value.replace(/\.[^.]+$/, '')) || 'assets';
+}
+
+function safeFileName(value: string): string {
+  const extension = extensionForPath(value);
+  const stem = extension ? value.slice(0, -(extension.length + 1)) : value;
+  return `${safeNamePart(stem) || 'asset'}${extension ? `.${extension}` : ''}`;
+}
+
+function safeNamePart(value: string): string {
+  return value.normalize('NFKD').replace(/[^a-z0-9]+/gi, '');
+}
+
+function hasPlatformSafeName(path: string): boolean {
+  return normalizePath(path).split('/').every((segment) => /^[A-Za-z0-9._-]+$/.test(segment) && !/\s/.test(segment));
+}
+
+function extensionForPath(path: string): string {
+  const clean = splitUrlSuffix(path).path;
+  const file = basename(clean);
+  const index = file.lastIndexOf('.');
+  return index > -1 ? file.slice(index + 1).toLowerCase() : '';
 }
 
 function isExternalUrl(value: string): boolean {
