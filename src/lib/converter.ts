@@ -1,12 +1,17 @@
 import JSZip from 'jszip';
-import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, OutputPackage, TargetPlatform, ValidationCheck } from './types';
+import { ADMIXER_HARNESS_FILES, ADMIXER_HARNESS_FOLDERS } from './admixerHarness';
+import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, OutputPackage, TargetPlatform, UmhFormat, ValidationCheck } from './types';
 
 const DEFAULT_OPTIONS: ConversionOptions = {
   landingUrl: 'https://www.google.com',
   admixerMode: 'fullscreen',
+  umhFormat: 'standard',
+  fusifyFormat: 'standard',
   umhAutoButton: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
+
+const ADPARTNER_IFRAME_SRC = '//a4p.adpartner.pro/adpartner-iframe.min.js';
 
 type TextMap = Map<string, string>;
 type AssetPathMap = Map<string, string>;
@@ -89,7 +94,7 @@ export async function readSourceCreative(file: File | Blob): Promise<SourceCreat
 async function buildPlatformPackage(source: SourceCreative, platform: TargetPlatform, options: ConversionOptions): Promise<OutputPackage> {
   const out = new JSZip();
   const warnings: string[] = [];
-  const entryName = platform === 'admixer' ? 'body.html' : 'index.html';
+  const entryName = platform === 'admixer' || (platform === 'fusify' && options.fusifyFormat === 'halfscreen') ? 'body.html' : 'index.html';
   const mode = platform === 'admixer' ? options.admixerMode : undefined;
   const assetPlan = buildAssetPlan(source, platform);
   const transformedHtml = transformHtmlWithAssets(source.entryHtml, platform, options, assetPlan.pathMap);
@@ -106,11 +111,19 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
 
   if (platform === 'admixer') {
     out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen'));
+    // Тестовий стенд index/ входить в обидва робочі еталони — без нього
+    // превʼю-тул Admixer не може зібрати Settings для креативу.
+    ADMIXER_HARNESS_FILES.forEach((file) => out.file(file.path, file.content));
+    ADMIXER_HARNESS_FOLDERS.forEach((folder) => out.folder(folder));
   }
 
   const blob = await out.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-  const outputEntries = [...assetPlan.files.map((file) => file.outputPath), entryName, ...(platform === 'admixer' ? ['js/body.js'] : [])];
-  validation.push(...validatePlatformPackage(platform, outputEntries, transformedHtml, blob.size, entryName));
+  const outputEntries = [
+    ...assetPlan.files.map((file) => file.outputPath),
+    entryName,
+    ...(platform === 'admixer' ? ['js/body.js', ...ADMIXER_HARNESS_FILES.map((file) => file.path)] : [])
+  ];
+  validation.push(...validatePlatformPackage(platform, outputEntries, transformedHtml, blob.size, entryName, options));
   validation.filter((check) => !check.passed).forEach((check) => warnings.push(`${labelPlatform(platform)}: ${check.label}`));
 
   const sizeLimit = platformSizeLimit(platform);
@@ -118,9 +131,14 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
     warnings.push(`${labelPlatform(platform)} package is ${(blob.size / 1024).toFixed(1)} KB; verify the platform weight limit before trafficking.`);
   }
 
+  const scalingNote = fixedSizeScalingNote(source.metadata, platform, options);
+  if (scalingNote) {
+    warnings.push(scalingNote);
+  }
+
   return {
     platform,
-    fileName: buildOutputFileName(source.metadata.sourceFileName, platform),
+    fileName: buildOutputFileName(source.metadata, platform, options),
     blob,
     sizeBytes: blob.size,
     warnings,
@@ -149,39 +167,57 @@ export function transformHtml(html: string, platform: TargetPlatform, options: C
 function transformHtmlWithAssets(html: string, platform: TargetPlatform, options: ConversionOptions, assetPathMap: AssetPathMap): string {
   const landingUrl = escapeForScript(options.landingUrl || DEFAULT_OPTIONS.landingUrl);
   const normalized = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
-  const withClickTag = upsertClickTag(normalized, landingUrl);
 
   if (platform === 'umh') {
-    return addHeadMeta(withClickHandler(withClickTag, 'window.admixAPI && admixAPI.click ? admixAPI.click() : window.open(window.clickTag, "_blank")'), [
+    // UMH передає clickTag у банер сама; жорстке перевизначення ламає трекінг,
+    // тому декларація лишає пріоритет за платформним значенням.
+    return addHeadMeta(upsertClickTag(normalized, landingUrl), [
       ['ad.type', 'banner'],
-      ['ad.size', adSizeContent(html)],
+      ['ad.size', umhAdSizeContent(html, options.umhFormat)],
       ['ad.vars', `auto_button=${options.umhAutoButton ? '1' : '0'}`]
     ]);
   }
 
   if (platform === 'fusify') {
-    return addHeadMeta(wrapBodyWithFusifyClick(withClickTag), [
-      ['ad.size', adSizeContent(html)]
-    ]);
+    if (options.fusifyFormat === 'halfscreen') {
+      return buildFusifyHalfscreenHtml(normalized, html);
+    }
+    // Стандартні розміри AdPartner приймає як звичайний креатив без власного API.
+    return upsertClickTag(normalized, landingUrl);
   }
 
-  return buildAdmixerHtml(withClickTag, options.admixerMode);
+  return buildAdmixerHtml(normalized, options.admixerMode);
+}
+
+function buildFusifyHalfscreenHtml(html: string, originalHtml: string): string {
+  const neutralized = neutralizeDirectClicks(html)
+    .replace(/<script[^>]*>\s*var\s+clickTag[\s\S]*?<\/script>/gi, '');
+  const withScript = ensureHeadScript(ensureViewportMeta(neutralized), ADPARTNER_IFRAME_SRC);
+  const withMeta = addHeadMeta(withScript, [
+    ['ad.size', adSizeContent(originalHtml)]
+  ]);
+  const bodyInner = extractBodyInner(withMeta);
+  const wrapped = `<div id="container" style="position:absolute;left:0;top:0;width:100%;height:100%;" onclick="return adPartner.click();">
+${bodyInner}
+</div>`;
+  return replaceBodyInner(withMeta, wrapped);
 }
 
 function buildAdmixerHtml(html: string, mode: AdmixerMode): string {
-  const bodyInner = extractBodyInner(html);
-  const headInner = extractHeadInner(html);
-  const size = mode === 'fullscreen' ? 'width=device-width, initial-scale=1.0' : 'width=device-width, initial-scale=1.0, maximum-scale=1.0';
+  // Кліки має рахувати globalHTML5Api.click() з js/body.js — прямий window.open
+  // обходить трекінг Admixer, а clickTag у head платформа не передає.
+  const neutralized = neutralizeDirectClicks(html);
+  const bodyInner = extractBodyInner(neutralized);
+  const headInner = extractHeadInner(neutralized);
   const closeClass = mode === 'fullscreen' ? 'admix-close-button' : 'ad-close-button';
   const closeStyle = mode === 'fullscreen'
     ? 'position:absolute;width:20px;height:20px;left:0;top:0;z-index:9999;cursor:pointer;'
     : 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;';
 
-  return `<!doctype html>
+  return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="${size}">
 ${headInner}
 </head>
 <body style="margin:0;overflow:hidden;">
@@ -235,26 +271,15 @@ function buildAdmixerBodyJs(mode: AdmixerMode): string {
 });`;
 }
 
-function wrapBodyWithFusifyClick(html: string): string {
-  const withoutDirectOpen = html.replace(/window\.open\((?:window\.)?clickTag[^)]*\)/gi, 'window.adPartner && adPartner.click ? adPartner.click() : false');
-  const withScript = ensureHeadScript(withoutDirectOpen, '//a4p.adpartner.pro/adpartner-iframe.min.js');
-  const bodyInner = extractBodyInner(withScript);
-  const wrapped = `<div id="adpartner-click-area" style="position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;" onclick="return window.adPartner && adPartner.click ? adPartner.click() : (window.open(window.clickTag, '_blank'), false);">
-${bodyInner}
-</div>`;
-  return replaceBodyInner(withScript, wrapped);
+function neutralizeDirectClicks(html: string): string {
+  return html.replace(/window\.open\((?:window\.)?clickTag[^)]*\)/gi, 'void 0');
 }
 
-function withClickHandler(html: string, expression: string): string {
-  if (/addEventListener\(['"]click['"]/i.test(html)) {
-    return html.replace(/window\.open\((?:window\.)?clickTag[^)]*\)/gi, expression);
+function ensureViewportMeta(html: string): string {
+  if (/<meta\s+name=["']viewport["']/i.test(html)) {
+    return html;
   }
-
-  const bodyInner = extractBodyInner(html);
-  const wrapped = `<div id="banner-click-area" style="position:relative;width:100%;height:100%;cursor:pointer;" onclick="${expression}; return false;">
-${bodyInner}
-</div>`;
-  return replaceBodyInner(html, wrapped);
+  return html.replace(/<head[^>]*>/i, (head) => `${head}\n<meta name="viewport" content="width=device-width, initial-scale=1.0">`);
 }
 
 function removeDv360PreviewScripts(html: string): string {
@@ -264,7 +289,7 @@ function removeDv360PreviewScripts(html: string): string {
 }
 
 function upsertClickTag(html: string, landingUrl: string): string {
-  const declaration = `<script type="text/javascript">var clickTag = "${landingUrl}";</script>`;
+  const declaration = `<script type="text/javascript">var clickTag = window.clickTag || "${landingUrl}";</script>`;
   if (/var\s+clickTag\s*=/.test(html)) {
     return html.replace(/<script[^>]*>\s*var\s+clickTag\s*=\s*["'][^"']*["'];?\s*<\/script>/i, declaration);
   }
@@ -329,10 +354,13 @@ function extractBodyInner(html: string): string {
 }
 
 function extractHeadInner(html: string): string {
+  // Використовується лише для Admixer body.html: charset ставимо свій,
+  // а viewport/ad.size/clickTag — DV360-специфіка, якої немає в еталонах.
   const head = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? '';
   return head
     .replace(/<meta\s+charset=["'][^"']*["']\s*\/?>/gi, '')
     .replace(/<meta\s+name=["']viewport["'][^>]*>/gi, '')
+    .replace(/<meta\s+name=["']ad\.size["'][^>]*>/gi, '')
     .replace(/<script[^>]*>\s*var\s+clickTag[\s\S]*?<\/script>/gi, '')
     .trim();
 }
@@ -371,34 +399,42 @@ function buildAssetPlan(source: SourceCreative, platform: TargetPlatform): Asset
   return { files, pathMap };
 }
 
-function validatePlatformPackage(platform: TargetPlatform, entries: string[], html: string, sizeBytes: number, entryName: string): ValidationCheck[] {
+function validatePlatformPackage(platform: TargetPlatform, entries: string[], html: string, sizeBytes: number, entryName: string, options: ConversionOptions): ValidationCheck[] {
   const checks: ValidationCheck[] = [
     { label: `${entryName} is present at zip root`, passed: entries.includes(entryName) },
     { label: 'No preview.html or conversion-manifest.json in production zip', passed: !entries.some((entry) => /(^|\/)(preview\.html|conversion-manifest\.json)$/i.test(entry)) },
     { label: 'No macOS/system files', passed: !entries.some(isSystemFile) },
     { label: 'Only platform-supported file extensions', passed: entries.every((entry) => isAllowedEntryExtension(entry, platform)) },
-    { label: 'Platform click API is wired', passed: hasPlatformClickHook(html, platform) },
+    { label: 'Platform click API is wired', passed: hasPlatformClickHook(html, platform, options) },
     { label: `Package is under ${(platformSizeLimit(platform) / 1000).toFixed(0)} KB`, passed: sizeBytes <= platformSizeLimit(platform) }
   ];
 
   if (platform === 'umh') {
+    const adSizePattern = options.umhFormat === 'standard'
+      ? /<meta\s+name=["']ad\.size["']\s+content=["']width=\d+,height=\d+["']/i
+      : new RegExp(`<meta\\s+name=["']ad\\.size["']\\s+content=["']${options.umhFormat}["']`, 'i');
     checks.push(
-      { label: 'UMH required ad.type/ad.size/ad.vars metadata is present', passed: /<meta\s+name=["']ad\.type["'][^>]+content=["']banner["']/i.test(html) && /<meta\s+name=["']ad\.size["']/i.test(html) && /<meta\s+name=["']ad\.vars["']/i.test(html) },
-      { label: 'UMH file names contain no spaces or non-latin characters', passed: entries.every(hasPlatformSafeName) }
+      { label: 'UMH required ad.type/ad.size/ad.vars metadata is present', passed: /<meta\s+name=["']ad\.type["'][^>]+content=["']banner["']/i.test(html) && adSizePattern.test(html) && /<meta\s+name=["']ad\.vars["']/i.test(html) },
+      { label: 'UMH file names contain no spaces or non-latin characters', passed: entries.every(hasPlatformSafeName) },
+      { label: 'clickTag keeps the platform-provided value (no hard override)', passed: !/var\s+clickTag\s*=\s*["']/.test(html) }
     );
   }
 
   if (platform === 'fusify') {
-    checks.push(
-      { label: 'Fusify/AdPartner archive has no folders', passed: entries.every((entry) => !entry.includes('/')) },
-      { label: 'AdPartner iframe bridge is connected', passed: /a4p\.adpartner\.pro\/adpartner-iframe\.min\.js/i.test(html) }
-    );
+    checks.push({ label: 'Fusify/AdPartner archive has no folders', passed: entries.every((entry) => !entry.includes('/')) });
+    if (options.fusifyFormat === 'halfscreen') {
+      checks.push({ label: 'AdPartner iframe bridge is connected', passed: /a4p\.adpartner\.pro\/adpartner-iframe\.min\.js/i.test(html) });
+    } else {
+      checks.push({ label: 'Standard AdPartner creative carries no halfscreen API', passed: !/a4p\.adpartner\.pro|adPartner\.click/i.test(html) });
+    }
   }
 
   if (platform === 'admixer') {
     checks.push(
       { label: 'Admixer body.js API bridge is present', passed: entries.includes('js/body.js') },
-      { label: 'Admixer globalHTML5Api load/init/click/close flow is present', passed: /globalHTML5Api/i.test(html) || entries.includes('js/body.js') }
+      { label: 'Admixer globalHTML5Api load/init/click/close flow is present', passed: /globalHTML5Api/i.test(html) || entries.includes('js/body.js') },
+      { label: 'No direct window.open click bypassing globalHTML5Api', passed: !/window\.open\((?:window\.)?clickTag/i.test(html) },
+      { label: 'Admixer index/ preview harness is bundled', passed: entries.includes('index/index.html') && entries.includes('index/settings.js') }
     );
   }
 
@@ -408,6 +444,29 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
 function adSizeContent(html: string): string {
   const { width, height } = extractAdSize(html);
   return width && height ? `width=${width},height=${height}` : 'width=300,height=600';
+}
+
+function fixedSizeScalingNote(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string | undefined {
+  const stretchFormat = platform === 'admixer'
+    ? `Admixer ${options.admixerMode}`
+    : platform === 'umh' && options.umhFormat !== 'standard'
+      ? `UMH ${options.umhFormat}`
+      : platform === 'fusify' && options.fusifyFormat === 'halfscreen'
+        ? 'AdPartner halfscreen'
+        : undefined;
+
+  if (!stretchFormat || !metadata.width || !metadata.height) {
+    return undefined;
+  }
+  return `${stretchFormat}: the DV360 creative is fixed at ${metadata.width}x${metadata.height}px and will not auto-scale to fill the placement. Review the preview before trafficking.`;
+}
+
+function umhAdSizeContent(html: string, format: UmhFormat): string {
+  // Для fullscreen/halfscreen UMH чекає літеральне значення, а не width/height.
+  if (format === 'fullscreen' || format === 'halfscreen') {
+    return format;
+  }
+  return adSizeContent(html);
 }
 
 function stripBase(path: string, basePath: string): string {
@@ -465,8 +524,9 @@ function isAllowedAssetExtension(extension: string, platform: TargetPlatform): b
 }
 
 function platformSizeLimit(platform: TargetPlatform): number {
+  // UMH та Fusify/AdPartner: 500 KB; Admixer: 300 KB без відео.
   if (platform === 'umh' || platform === 'fusify') return 500_000;
-  return 1_000_000;
+  return 300_000;
 }
 
 function uniqueOutputPath(path: string, used: Set<string>): string {
@@ -541,9 +601,19 @@ function sourceBaseName(fileName: string): string {
   return safeFilePart(withoutZip);
 }
 
-function buildOutputFileName(sourceFileName: string, platform: TargetPlatform): string {
-  const suffix = platform === 'umh' ? 'UMH' : platform === 'fusify' ? 'Fusify' : 'Admixer';
-  return `${sourceBaseName(sourceFileName)}_${suffix}.zip`;
+function buildOutputFileName(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string {
+  const base = sourceBaseName(metadata.sourceFileName);
+  const size = metadata.width && metadata.height ? `${metadata.width}x${metadata.height}` : '300x600';
+
+  if (platform === 'umh') {
+    // Вимога UMH до імені архіву: banner_<size>@<name>.zip
+    const token = options.umhFormat === 'standard' ? size : options.umhFormat;
+    return `banner_${token}@${base}.zip`;
+  }
+  if (platform === 'fusify') {
+    return options.fusifyFormat === 'halfscreen' ? `halfscreen_${base}_adpartner.zip` : `${size}_${base}_adpartner.zip`;
+  }
+  return `${options.admixerMode}_${base}_admixer.zip`;
 }
 
 function safeFilePart(value: string): string {
@@ -551,12 +621,13 @@ function safeFilePart(value: string): string {
   return cleaned || 'banner';
 }
 
-function hasPlatformClickHook(html: string, platform: TargetPlatform): boolean {
+function hasPlatformClickHook(html: string, platform: TargetPlatform, options: ConversionOptions): boolean {
   if (platform === 'umh') {
-    return /admixAPI\.click|clickTag/i.test(html);
+    // Клік вішає платформа (auto_button) або креатив через переданий clickTag.
+    return options.umhAutoButton || /clickTag/i.test(html);
   }
   if (platform === 'fusify') {
-    return /adPartner\.click/i.test(html);
+    return options.fusifyFormat === 'halfscreen' ? /adPartner\.click/i.test(html) : true;
   }
   return /globalHTML5Api\.click|admixer-click-area/i.test(html);
 }

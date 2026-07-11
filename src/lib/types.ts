@@ -2,9 +2,15 @@ export type TargetPlatform = 'umh' | 'fusify' | 'admixer';
 
 export type AdmixerMode = 'fullscreen' | 'halfscreen';
 
+export type UmhFormat = 'standard' | 'fullscreen' | 'halfscreen';
+
+export type FusifyFormat = 'standard' | 'halfscreen';
+
 export interface ConversionOptions {
   landingUrl: string;
   admixerMode: AdmixerMode;
+  umhFormat: UmhFormat;
+  fusifyFormat: FusifyFormat;
   umhAutoButton: boolean;
   targetPlatforms: TargetPlatform[];
 }

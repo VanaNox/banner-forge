@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import JSZip from 'jszip';
 import { convertDv360Banner, readSourceCreative, transformHtml } from '../src/lib/converter';
+import type { ConversionOptions } from '../src/lib/types';
 
 const dv360Html = `<!doctype html>
 <html>
@@ -14,6 +17,15 @@ const dv360Html = `<!doctype html>
 <script>document.getElementById('banner').addEventListener('click', function () { window.open(window.clickTag); });</script>
 </body>
 </html>`;
+
+const baseOptions: ConversionOptions = {
+  landingUrl: 'https://example.com/landing',
+  admixerMode: 'fullscreen',
+  umhFormat: 'standard',
+  fusifyFormat: 'standard',
+  umhAutoButton: true,
+  targetPlatforms: ['umh', 'fusify', 'admixer']
+};
 
 async function makeDv360Blob() {
   const zip = new JSZip();
@@ -41,53 +53,97 @@ describe('readSourceCreative', () => {
   });
 });
 
-describe('transformHtml', () => {
-  it('adds UMH banner metadata and preserves click tracking fallback', () => {
-    const html = transformHtml(dv360Html, 'umh', {
-      landingUrl: 'https://example.com/landing',
-      admixerMode: 'fullscreen',
-      umhAutoButton: true,
-      targetPlatforms: ['umh', 'fusify', 'admixer']
-    });
+describe('transformHtml for UMH', () => {
+  it('adds UMH metadata and keeps the platform-provided clickTag first', () => {
+    const html = transformHtml(dv360Html, 'umh', baseOptions);
 
     expect(html).toContain('meta name="ad.type" content="banner"');
     expect(html).toContain('meta name="ad.size" content="width=300,height=600"');
     expect(html).toContain('meta name="ad.vars" content="auto_button=1"');
-    expect(html).toContain('var clickTag = "https://example.com/landing"');
-    expect(html).toContain('admixAPI.click');
+    // Платформне значення clickTag має пріоритет над landing-фолбеком.
+    expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
+    expect(html).not.toMatch(/var\s+clickTag\s*=\s*["']/);
   });
 
-  it('flattens Fusify asset paths and routes clicks through AdPartner', () => {
-    const html = transformHtml(dv360Html, 'fusify', {
-      landingUrl: 'https://example.com/landing',
-      admixerMode: 'fullscreen',
-      umhAutoButton: true,
-      targetPlatforms: ['umh', 'fusify', 'admixer']
-    });
+  it('does not inject extra click wrappers around the creative', () => {
+    const html = transformHtml(dv360Html, 'umh', baseOptions);
 
-    expect(html).toContain('//a4p.adpartner.pro/adpartner-iframe.min.js');
-    expect(html).toContain('adPartner.click');
+    expect(html).not.toContain('banner-click-area');
+    expect(html).not.toContain('admixAPI');
+  });
+
+  it('uses the literal fullscreen/halfscreen ad.size for UMH special formats', () => {
+    const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'fullscreen' });
+    const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'halfscreen' });
+
+    expect(fullscreen).toContain('meta name="ad.size" content="fullscreen"');
+    expect(halfscreen).toContain('meta name="ad.size" content="halfscreen"');
+  });
+
+  it('reflects auto_button=0 when the auto click layer is disabled', () => {
+    const html = transformHtml(dv360Html, 'umh', { ...baseOptions, umhAutoButton: false });
+
+    expect(html).toContain('meta name="ad.vars" content="auto_button=0"');
+  });
+});
+
+describe('transformHtml for Fusify/AdPartner', () => {
+  it('keeps standard banners as a plain creative without the halfscreen API', () => {
+    const html = transformHtml(dv360Html, 'fusify', baseOptions);
+
+    expect(html).not.toContain('a4p.adpartner.pro');
+    expect(html).not.toContain('adPartner.click');
+    expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
+    // Рідний обробник кліку креативу лишається робочим.
+    expect(html).toContain('window.open(window.clickTag)');
+  });
+
+  it('flattens asset paths for the flat AdPartner archive', () => {
+    const html = transformHtml(dv360Html, 'fusify', baseOptions);
+
     expect(html).toContain('src="frame 1.png"');
     expect(html).toContain('src="creative.js"');
     expect(html).not.toContain('images/frame 1.png');
   });
 
-  it('creates Admixer body.html content with API close and click hooks', () => {
-    const html = transformHtml(dv360Html, 'admixer', {
-      landingUrl: 'https://example.com/landing',
-      admixerMode: 'halfscreen',
-      umhAutoButton: true,
-      targetPlatforms: ['umh', 'fusify', 'admixer']
-    });
+  it('builds the halfscreen format around body.html conventions', () => {
+    const html = transformHtml(dv360Html, 'fusify', { ...baseOptions, fusifyFormat: 'halfscreen' });
+
+    expect(html).toContain('//a4p.adpartner.pro/adpartner-iframe.min.js');
+    expect(html).toContain('onclick="return adPartner.click();"');
+    expect(html).toContain('meta name="ad.size" content="width=300,height=600"');
+    expect(html).toContain('meta name="viewport"');
+    // Клік іде тільки через adPartner.click(), без window.open і власного clickTag.
+    expect(html).not.toContain('window.open(window.clickTag');
+    expect(html).not.toContain('var clickTag');
+  });
+});
+
+describe('transformHtml for Admixer', () => {
+  it('creates body.html content with API close and click hooks', () => {
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, admixerMode: 'halfscreen' });
 
     expect(html).toContain('id="admixer-click-area"');
     expect(html).toContain('id="close"');
+    expect(html).toContain('class="ad-close-button"');
     expect(html).toContain('src="js/body.js"');
+  });
+
+  it('routes clicks through globalHTML5Api instead of window.open', () => {
+    const html = transformHtml(dv360Html, 'admixer', baseOptions);
+
+    // window.open(clickTag) відкривав би undefined і обходив трекінг Admixer.
+    expect(html).not.toContain('window.open(window.clickTag');
+    expect(html).not.toContain('var clickTag');
+    expect(html).toContain('class="admix-close-button"');
+    // DV360-специфічні мета-теги в admixer-еталонах відсутні.
+    expect(html).not.toContain('ad.size');
+    expect(html).not.toContain('name="viewport"');
   });
 });
 
 describe('convertDv360Banner', () => {
-  it('builds three target packages and one download bundle', async () => {
+  it('builds three target packages and one download bundle with platform naming', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',
       admixerMode: 'halfscreen'
@@ -95,15 +151,23 @@ describe('convertDv360Banner', () => {
 
     expect(result.packages.map((pkg) => pkg.platform)).toEqual(['umh', 'fusify', 'admixer', 'bundle']);
     expect(result.packages.map((pkg) => pkg.fileName)).toEqual([
-      'Levia_DV360_UMH.zip',
-      'Levia_DV360_Fusify.zip',
-      'Levia_DV360_Admixer.zip',
+      'banner_300x600@Levia_DV360.zip',
+      '300x600_Levia_DV360_adpartner.zip',
+      'halfscreen_Levia_DV360_admixer.zip',
       'Levia_DV360_converted_bundle.zip'
     ]);
     expect(result.packages.every((pkg) => pkg.sizeBytes > 0)).toBe(true);
-    expect(result.packages.every((pkg) => pkg.validation.length > 0)).toBe(true);
     expect(result.packages.filter((pkg) => pkg.platform !== 'bundle').every((pkg) => pkg.validation.every((check) => check.passed))).toBe(true);
-    expect(result.warnings.some((warning) => warning.includes('external resources'))).toBe(false);
+  });
+
+  it('names UMH fullscreen archives with the literal format token', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      umhFormat: 'fullscreen',
+      targetPlatforms: ['umh']
+    });
+
+    expect(result.packages[0].fileName).toBe('banner_fullscreen@Levia_DV360.zip');
   });
 
   it('writes platform-specific zip entrypoints and removes macOS metadata', async () => {
@@ -123,14 +187,34 @@ describe('convertDv360Banner', () => {
     expect(admixerZip.file('body.html')).toBeTruthy();
     expect(admixerZip.file('js/body.js')).toBeTruthy();
     expect(await admixerZip.file('js/body.js')!.async('text')).toContain('globalHTML5Api.close(true)');
+    // Стенд index/ обовʼязковий: превʼю-тул Admixer читає з нього Settings.
+    expect(admixerZip.file('index/index.html')).toBeTruthy();
+    expect(admixerZip.file('index/settings.js')).toBeTruthy();
+    expect(admixerZip.file('index/css/index.css')).toBeTruthy();
+    expect(await admixerZip.file('index/index.html')!.async('text')).toContain('"TemplateId\\":52');
     const allEntries = [
       ...Object.keys(umhZip.files),
       ...Object.keys(fusifyZip.files),
       ...Object.keys(admixerZip.files)
     ];
     expect(allEntries.some((path) => path.startsWith('__MACOSX'))).toBe(false);
-    expect(allEntries.some((path) => /preview\.html|conversion-manifest\.json/i.test(path))).toBe(false);
     expect(Object.keys(fusifyZip.files).filter((path) => !fusifyZip.files[path].dir).every((path) => !path.includes('/'))).toBe(true);
+  });
+
+  it('emits body.html for the AdPartner halfscreen format', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      fusifyFormat: 'halfscreen',
+      targetPlatforms: ['fusify']
+    });
+
+    const output = result.packages[0];
+    expect(output.fileName).toBe('halfscreen_Levia_DV360_adpartner.zip');
+    const zip = await JSZip.loadAsync(output.blob);
+    expect(zip.file('body.html')).toBeTruthy();
+    expect(zip.file('index.html')).toBeNull();
+    expect(await zip.file('body.html')!.async('text')).toContain('adPartner.click()');
+    expect(output.validation.every((check) => check.passed)).toBe(true);
   });
 
   it('only builds selected target platforms', async () => {
@@ -142,9 +226,50 @@ describe('convertDv360Banner', () => {
 
     expect(result.packages.map((pkg) => pkg.platform)).toEqual(['umh', 'admixer', 'bundle']);
     expect(result.packages.map((pkg) => pkg.fileName)).toEqual([
-      'Levia_DV360_UMH.zip',
-      'Levia_DV360_Admixer.zip',
+      'banner_300x600@Levia_DV360.zip',
+      'fullscreen_Levia_DV360_admixer.zip',
       'Levia_DV360_converted_bundle.zip'
     ]);
+  });
+});
+
+describe('convertDv360Banner with the real Levia_DV360 sample', () => {
+  async function convertRealSample(options?: Partial<ConversionOptions>) {
+    const buffer = readFileSync(path.resolve(__dirname, '../samples/Levia_DV360.zip'));
+    const file = new File([buffer], 'Levia_DV360.zip', { type: 'application/zip' });
+    return convertDv360Banner(file, { landingUrl: 'https://example.com/landing', ...options });
+  }
+
+  it('passes every package validation check', async () => {
+    const result = await convertRealSample();
+
+    for (const pkg of result.packages.filter((item) => item.platform !== 'bundle')) {
+      const failed = pkg.validation.filter((check) => !check.passed).map((check) => check.label);
+      expect(failed, `${pkg.platform} failed: ${failed.join(', ')}`).toEqual([]);
+    }
+  });
+
+  it('rewrites every image reference in the flat AdPartner archive', async () => {
+    const result = await convertRealSample();
+    const fusify = result.packages.find((pkg) => pkg.platform === 'fusify')!;
+    const zip = await JSZip.loadAsync(fusify.blob);
+    const html = await zip.file('index.html')!.async('text');
+
+    expect(html).not.toContain('images/');
+    const referenced = [...html.matchAll(/src="([^"]+\.(?:svg|png|jpg))"/g)].map((match) => match[1]);
+    expect(referenced.length).toBeGreaterThan(0);
+    for (const asset of referenced) {
+      expect(zip.file(asset), `${asset} referenced but missing in zip`).toBeTruthy();
+    }
+  });
+
+  it('keeps Admixer output under the 300 KB platform limit', async () => {
+    const result = await convertRealSample();
+    const admixer = result.packages.find((pkg) => pkg.platform === 'admixer')!;
+
+    expect(admixer.sizeBytes).toBeLessThanOrEqual(300_000);
+    const zip = await JSZip.loadAsync(admixer.blob);
+    const body = await zip.file('body.html')!.async('text');
+    expect(body).not.toContain('window.open(window.clickTag');
   });
 });

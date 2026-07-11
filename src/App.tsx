@@ -1,9 +1,8 @@
-import { ChangeEvent, DragEvent, useMemo, useState } from 'react';
+import { ChangeEvent, DragEvent, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  Clock3,
   Download,
   ExternalLink,
   FileCode2,
@@ -12,22 +11,26 @@ import {
   Hexagon,
   Loader2,
   Monitor,
+  Moon,
   PackageCheck,
   Play,
   RefreshCw,
   Settings,
   Smartphone,
-  Trash2,
+  Sun,
   UploadCloud,
-  Wrench
+  Wrench,
+  X
 } from 'lucide-react';
 import { convertDv360Banner, readSourceCreative } from './lib/converter';
 import { createPackagePreviewUrl } from './lib/preview';
-import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, OutputPackage, TargetPlatform } from './lib/types';
+import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, FusifyFormat, OutputPackage, TargetPlatform, UmhFormat } from './lib/types';
 
 const initialOptions: ConversionOptions = {
   landingUrl: 'https://www.example.com/summer-sale',
   admixerMode: 'fullscreen',
+  umhFormat: 'standard',
+  fusifyFormat: 'standard',
   umhAutoButton: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
@@ -37,6 +40,14 @@ type PreviewState = {
   platform: TargetPlatform;
   url: string;
 };
+
+type Theme = 'light' | 'dark';
+
+function initialTheme(): Theme {
+  const saved = localStorage.getItem('bf-theme');
+  if (saved === 'light' || saved === 'dark') return saved;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
 export function App() {
   const [file, setFile] = useState<File | null>(null);
@@ -49,7 +60,20 @@ export function App() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewDevice, setPreviewDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [activeDialog, setActiveDialog] = useState<'settings' | 'help' | null>(null);
+  const [activeDialog, setActiveDialog] = useState<'settings' | 'help' | 'validation' | null>(null);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('bf-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const activeMetadata = result?.metadata ?? metadata;
   const platformPackages = useMemo(
@@ -121,6 +145,8 @@ export function App() {
     try {
       const nextResult = await convertDv360Banner(file, options);
       setResult(nextResult);
+      const generated = nextResult.packages.filter((pkg) => pkg.platform !== 'bundle').length;
+      setToast(`Conversion completed — ${generated} platform package${generated === 1 ? '' : 's'} generated`);
       const firstPackage = nextResult.packages.find((pkg): pkg is OutputPackage & { platform: TargetPlatform } => pkg.platform !== 'bundle');
       if (firstPackage) await openPreview(firstPackage);
     } catch (conversionError) {
@@ -147,24 +173,31 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <Wrench size={28} />
+          <Wrench size={20} />
           <h1>Banner Forge</h1>
           <span className="ready-pill"><span />Ready</span>
         </div>
         <div className="topbar-tools">
-          <span><FileText size={16} />Job ID: BF-20260708-HTML5</span>
-          <span><Clock3 size={16} />Local session</span>
-          <button type="button" onClick={() => setActiveDialog('settings')}><Settings size={17} />Settings</button>
-          <button type="button" onClick={() => setActiveDialog('help')}><HelpCircle size={17} />Help</button>
+          <button
+            type="button"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
+          <button type="button" onClick={() => setActiveDialog('settings')}><Settings size={15} />Settings</button>
+          <button type="button" onClick={() => setActiveDialog('help')}><HelpCircle size={15} />Help</button>
         </div>
       </header>
 
       <section className="workspace">
         <aside className="column source-column">
-          <h2>1. Source Upload (DV360 HTML5 ZIP)</h2>
+          <h2>1. Source</h2>
           <label className="dropzone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
             <input type="file" accept=".zip,application/zip" onChange={(event: ChangeEvent<HTMLInputElement>) => void handleFile(event.target.files?.[0])} />
-            <UploadCloud size={46} />
+            <UploadCloud size={32} />
             <strong>Drop DV360 zip here</strong>
             <span>or click to browse</span>
           </label>
@@ -201,25 +234,39 @@ export function App() {
               onChange={(event) => updateOptions({ ...options, landingUrl: event.target.value })}
               placeholder="https://example.com"
             />
-            <p className="helper-note">Preview is generated in the app only. Exported platform zips stay validator-clean.</p>
           </section>
 
           <section className="mini-panel">
             <h3>Format Presets</h3>
             <PresetRow
               checked={options.targetPlatforms.includes('umh')}
-              label="UMH (Universal Mobile Hybrid)"
+              label={`UMH (${options.umhFormat})`}
               value={options.umhAutoButton ? 'auto click' : 'creative click'}
               onChange={() => togglePlatform('umh')}
               onSettings={() => setActiveDialog('settings')}
             />
+            <select
+              value={options.umhFormat}
+              onChange={(event) => updateOptions({ ...options, umhFormat: event.target.value as UmhFormat })}
+            >
+              <option value="standard">UMH standard banner (ad.size WxH)</option>
+              <option value="fullscreen">UMH fullscreen</option>
+              <option value="halfscreen">UMH halfscreen</option>
+            </select>
             <PresetRow
               checked={options.targetPlatforms.includes('fusify')}
-              label="Fusify / AdPartner"
-              value="flat zip"
+              label={`Fusify / AdPartner (${options.fusifyFormat})`}
+              value={options.fusifyFormat === 'halfscreen' ? 'body.html + API' : 'flat index.html'}
               onChange={() => togglePlatform('fusify')}
               onSettings={() => setActiveDialog('settings')}
             />
+            <select
+              value={options.fusifyFormat}
+              onChange={(event) => updateOptions({ ...options, fusifyFormat: event.target.value as FusifyFormat })}
+            >
+              <option value="standard">AdPartner standard banner (index.html)</option>
+              <option value="halfscreen">AdPartner halfscreen (body.html)</option>
+            </select>
             <PresetRow
               checked={options.targetPlatforms.includes('admixer')}
               label={`Admixer (${options.admixerMode === 'fullscreen' ? 'Fullscreen' : 'Halfscreen'})`}
@@ -243,7 +290,7 @@ export function App() {
         </aside>
 
         <section className="column pipeline-column">
-          <h2>2. Conversion Pipeline</h2>
+          <h2>2. Pipeline</h2>
           <div className={`source-card ${activeMetadata ? 'validated' : ''}`}>
             <div className="source-card-head">Source (DV360)</div>
             <div className="source-card-body">
@@ -268,7 +315,6 @@ export function App() {
           <div className="platform-grid">
             <PlatformCard
               title="UMH"
-              subtitle="Universal Mobile Hybrid"
               enabled={options.targetPlatforms.includes('umh')}
               isReady={Boolean(activeMetadata)}
               isConverting={isConverting}
@@ -277,7 +323,6 @@ export function App() {
             />
             <PlatformCard
               title="Fusify / AdPartner"
-              subtitle="Fusify / AdPartner"
               enabled={options.targetPlatforms.includes('fusify')}
               isReady={Boolean(activeMetadata)}
               isConverting={isConverting}
@@ -286,7 +331,6 @@ export function App() {
             />
             <PlatformCard
               title="Admixer (AdMX)"
-              subtitle="Admixer API 2.0"
               enabled={options.targetPlatforms.includes('admixer')}
               isReady={Boolean(activeMetadata)}
               isConverting={isConverting}
@@ -302,10 +346,21 @@ export function App() {
             </div>
           )}
 
-          <div className="pipeline-summary">
-            <strong>{pipelineSummaryTitle(file, activeMetadata, result, isInspecting, isConverting)}</strong>
-            <span>{pipelineSummaryText(options.targetPlatforms, result)}</span>
-          </div>
+          <section className="validation-summary">
+            <div className={`validation-pill ${criticalWarnings.length > 0 ? 'warn' : 'ok'}`}>
+              {criticalWarnings.length > 0 ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+              <span>
+                {result
+                  ? criticalWarnings.length > 0
+                    ? `${criticalWarnings.length} warning${criticalWarnings.length === 1 ? '' : 's'}`
+                    : `${completedChecks}/${totalChecks} checks passed`
+                  : 'No conversion yet'}
+              </span>
+            </div>
+            <button type="button" className="details-link" onClick={() => setActiveDialog('validation')}>
+              Details
+            </button>
+          </section>
         </section>
 
         <aside className="column results-column">
@@ -330,30 +385,6 @@ export function App() {
               Download bundle ({platformPackages.length} files)
             </DownloadButton>
           )}
-
-          <section className="validation-panel">
-            <div className="section-title">
-              <h3>Validation & Report</h3>
-              <span>{result ? `${completedChecks}/${totalChecks}` : '0/0'}</span>
-            </div>
-            {criticalWarnings.length > 0 ? criticalWarnings.map((warning) => (
-              <div className="validation-warning" key={warning}>
-                <AlertTriangle size={17} />
-                <span>{warning}</span>
-              </div>
-            )) : (
-              <div className="validation-ok">
-                <CheckCircle2 size={18} />
-                {result ? 'Core package checks passed. Run final QA in each platform validator before trafficking.' : 'Convert a package to generate validation results.'}
-              </div>
-            )}
-            <ul className="qa-list">
-              <li>Entrypoint exists in every output zip</li>
-              <li>Platform click hook is present</li>
-              <li>macOS/system files are removed</li>
-              <li>No preview.html or conversion-manifest.json in production zips</li>
-            </ul>
-          </section>
 
           <section className="preview-panel">
             <div className="preview-title">
@@ -381,7 +412,15 @@ export function App() {
             </div>
             <div className={`preview-canvas ${previewDevice}`}>
               {preview ? (
-                <iframe title={`${preview.packageName} preview`} src={preview.url} sandbox="allow-scripts allow-same-origin" />
+                <iframe
+                  title={`${preview.packageName} preview`}
+                  src={preview.url}
+                  sandbox="allow-scripts allow-same-origin"
+                  style={{
+                    width: activeMetadata?.width ? `${activeMetadata.width}px` : '100%',
+                    height: activeMetadata?.height ? `${activeMetadata.height}px` : '100%'
+                  }}
+                />
               ) : (
                 <div className="preview-placeholder">
                   <PackageCheck size={42} />
@@ -394,27 +433,83 @@ export function App() {
         </aside>
       </section>
 
-      <footer className="statusbar">
-        <span><span className="status-dot" />All systems operational</span>
-        <span className="storage">Storage used: local session <i /></span>
-        <button type="button" onClick={() => { setFile(null); setMetadata(null); setResult(null); setError(null); clearPreview(); }}>
-          <Trash2 size={15} />
-          Clear files
-        </button>
+      <footer className="footer-note">
+        <span>SFP Data Science Team</span>
       </footer>
+
+      {toast && (
+        <div className="toast" role="status" aria-live="polite">
+          <CheckCircle2 size={18} />
+          <span>{toast}</span>
+          <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification">
+            <X size={15} />
+          </button>
+        </div>
+      )}
 
       {activeDialog && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setActiveDialog(null)}>
-          <section className="dialog" role="dialog" aria-modal="true" aria-label={activeDialog === 'settings' ? 'Conversion settings' : 'Help'} onClick={(event) => event.stopPropagation()}>
+          <section
+            className={`dialog ${activeDialog === 'validation' ? 'wide' : ''}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label={activeDialog === 'settings' ? 'Conversion settings' : activeDialog === 'validation' ? 'Validation & Report' : 'Help'}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="dialog-head">
-              <h3>{activeDialog === 'settings' ? 'Conversion Settings' : 'How to Verify Conversion'}</h3>
+              <h3>{activeDialog === 'settings' ? 'Conversion Settings' : activeDialog === 'validation' ? 'Validation & Report' : 'How to Verify Conversion'}</h3>
               <button type="button" onClick={() => setActiveDialog(null)}>x</button>
             </div>
-            {activeDialog === 'settings' ? (
+            {activeDialog === 'validation' ? (
+              <div className="dialog-body validation-dialog">
+                {criticalWarnings.length > 0 && (
+                  <div className="dialog-warnings">
+                    {criticalWarnings.map((warning) => (
+                      <div className="validation-warning" key={warning}>
+                        <AlertTriangle size={16} />
+                        <span>{warning}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {platformPackages.length === 0 ? (
+                  <p>Convert a package to see validation results.</p>
+                ) : (
+                  platformPackages.map((pkg) => (
+                    <div className="validation-group" key={pkg.fileName}>
+                      <h4>{labelPlatform(pkg.platform)}</h4>
+                      <ul className="check-list">
+                        {pkg.validation.map((check) => (
+                          <li key={check.label} className={check.passed ? 'pass' : 'fail'}>
+                            {check.passed ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                            <span>{check.label}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : activeDialog === 'settings' ? (
               <div className="dialog-body">
                 <label className="dialog-check">
                   <input type="checkbox" checked={options.umhAutoButton} onChange={(event) => updateOptions({ ...options, umhAutoButton: event.target.checked })} />
                   UMH auto click layer
+                </label>
+                <label>
+                  UMH format
+                  <select value={options.umhFormat} onChange={(event) => updateOptions({ ...options, umhFormat: event.target.value as UmhFormat })}>
+                    <option value="standard">Standard banner</option>
+                    <option value="fullscreen">Fullscreen</option>
+                    <option value="halfscreen">Halfscreen</option>
+                  </select>
+                </label>
+                <label>
+                  Fusify / AdPartner format
+                  <select value={options.fusifyFormat} onChange={(event) => updateOptions({ ...options, fusifyFormat: event.target.value as FusifyFormat })}>
+                    <option value="standard">Standard banner (index.html)</option>
+                    <option value="halfscreen">Halfscreen (body.html)</option>
+                  </select>
                 </label>
                 <label>
                   Admixer format
@@ -463,16 +558,13 @@ function PresetRow({ checked, label, value, onChange, onSettings }: { checked: b
   );
 }
 
-function PlatformCard({ title, subtitle, enabled, isReady, isConverting, output, steps }: { title: string; subtitle: string; enabled: boolean; isReady: boolean; isConverting: boolean; output?: OutputPackage; steps: string[] }) {
+function PlatformCard({ title, enabled, isReady, isConverting, output, steps }: { title: string; enabled: boolean; isReady: boolean; isConverting: boolean; output?: OutputPackage; steps: string[] }) {
   const status = output ? 'Completed' : !enabled ? 'Disabled' : isConverting ? 'Converting' : isReady ? 'Ready' : 'Pending';
   return (
     <article className={`platform-card ${output ? 'done' : ''} ${!enabled ? 'disabled' : ''}`}>
       <div className="platform-heading">
-        {title.startsWith('Admixer') ? <span className="admx-mark">AD</span> : title.startsWith('Fusify') ? <Hexagon size={28} /> : <PackageCheck size={30} />}
-        <div>
-          <strong>{title}</strong>
-          <span>{subtitle}</span>
-        </div>
+        {title.startsWith('Admixer') ? <span className="admx-mark">AD</span> : title.startsWith('Fusify') ? <Hexagon size={22} /> : <PackageCheck size={24} />}
+        <strong>{title}</strong>
       </div>
       <span className="planned">{status}</span>
       <ol>
@@ -521,21 +613,6 @@ function DownloadButton({ output, children, className, ariaLabel }: { output: Ou
       {children}
     </a>
   );
-}
-
-function pipelineSummaryTitle(file: File | null, metadata: CreativeMetadata | null, result: ConversionResult | null, isInspecting: boolean, isConverting: boolean): string {
-  if (!file) return 'Upload a DV360 zip to start';
-  if (isInspecting) return 'Inspecting source package';
-  if (!metadata) return 'Package inspection failed';
-  if (isConverting) return 'Generating selected output packages';
-  if (result) return 'Conversion completed';
-  return 'Ready to convert';
-}
-
-function pipelineSummaryText(platforms: TargetPlatform[], result: ConversionResult | null): string {
-  const selected = platforms.map(labelPlatform).join(', ') || 'no platforms selected';
-  if (result) return `${result.packages.filter((pkg) => pkg.platform !== 'bundle').length} platform packages generated.`;
-  return `Selected outputs: ${selected}.`;
 }
 
 function formatDimensions(metadata: CreativeMetadata | null): string {

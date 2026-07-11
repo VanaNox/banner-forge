@@ -23,11 +23,11 @@ export async function createPackagePreviewUrl(output: OutputPackage): Promise<st
   }
 
   const zip = await JSZip.loadAsync(output.blob);
-  const entryName = output.platform === 'admixer' ? 'body.html' : 'index.html';
-  const entry = zip.file(entryName);
+  const entry = zip.file('body.html') || zip.file('index.html');
   if (!entry) {
-    throw new Error(`${entryName} was not found in ${output.fileName}.`);
+    throw new Error(`No body.html or index.html entrypoint was found in ${output.fileName}.`);
   }
+  const entryName = entry.name;
 
   const assetUrls = new Map<string, string>();
   const files = Object.values(zip.files).filter((file) => !file.dir && file.name !== entryName);
