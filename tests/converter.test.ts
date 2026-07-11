@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertDv360Banner, readSourceCreative, transformHtml } from '../src/lib/converter';
@@ -233,9 +233,13 @@ describe('convertDv360Banner', () => {
   });
 });
 
-describe('convertDv360Banner with the real Levia_DV360 sample', () => {
+// samples/ holds real client creatives and is gitignored on purpose (not for the public repo),
+// so this suite only runs when a developer has it locally — CI always skips it.
+const REAL_SAMPLE_PATH = path.resolve(__dirname, '../samples/Levia_DV360.zip');
+
+describe.skipIf(!existsSync(REAL_SAMPLE_PATH))('convertDv360Banner with the real Levia_DV360 sample', () => {
   async function convertRealSample(options?: Partial<ConversionOptions>) {
-    const buffer = readFileSync(path.resolve(__dirname, '../samples/Levia_DV360.zip'));
+    const buffer = readFileSync(REAL_SAMPLE_PATH);
     const file = new File([buffer], 'Levia_DV360.zip', { type: 'application/zip' });
     return convertDv360Banner(file, { landingUrl: 'https://example.com/landing', ...options });
   }
