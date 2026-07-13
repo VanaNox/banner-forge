@@ -110,7 +110,7 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
   out.file(entryName, transformedHtml);
 
   if (platform === 'admixer') {
-    out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen'));
+    out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen', source.metadata.height));
     // Тестовий стенд index/ входить в обидва робочі еталони — без нього
     // превʼю-тул Admixer не може зібрати Settings для креативу.
     ADMIXER_HARNESS_FILES.forEach((file) => out.file(file.path, file.content));
@@ -210,9 +210,12 @@ function buildAdmixerHtml(html: string, mode: AdmixerMode): string {
   const bodyInner = extractBodyInner(neutralized);
   const headInner = extractHeadInner(neutralized);
   const closeClass = mode === 'fullscreen' ? 'admix-close-button' : 'ad-close-button';
+  // CatFish: кнопка закриття у правому верхньому куті з відступом мінімум 5px (вимога доків).
   const closeStyle = mode === 'fullscreen'
     ? 'position:absolute;width:20px;height:20px;left:0;top:0;z-index:9999;cursor:pointer;'
-    : 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;';
+    : mode === 'catfish'
+      ? 'position:absolute;width:24px;height:24px;right:5px;top:5px;z-index:9999;cursor:pointer;'
+      : 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;';
 
   return `<!DOCTYPE html>
 <html>
@@ -230,10 +233,12 @@ ${bodyInner}
 </html>`;
 }
 
-function buildAdmixerBodyJs(mode: AdmixerMode): string {
-  const vertical = mode === 'halfscreen' ? 'bottom' : 'center';
+function buildAdmixerBodyJs(mode: AdmixerMode, creativeHeight?: number): string {
+  const vertical = mode === 'fullscreen' ? 'center' : 'bottom';
   const width = '100%';
-  const height = mode === 'halfscreen' ? '30%' : '100%';
+  // CatFish кріпиться знизу з фіксованою піксельною висотою креативу (еталон: 200px),
+  // доки обмежують висоту 30% екрана.
+  const height = mode === 'fullscreen' ? '100%' : mode === 'halfscreen' ? '30%' : `${creativeHeight || 200}px`;
   return `globalHTML5Api.on('load', function () {
   function prevent(event) {
     if (!event) return;

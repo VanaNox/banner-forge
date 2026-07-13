@@ -1,6 +1,6 @@
 export type TargetPlatform = 'umh' | 'fusify' | 'admixer';
 
-export type AdmixerMode = 'fullscreen' | 'halfscreen';
+export type AdmixerMode = 'fullscreen' | 'halfscreen' | 'catfish';
 
 export type UmhFormat = 'standard' | 'fullscreen' | 'halfscreen';
 

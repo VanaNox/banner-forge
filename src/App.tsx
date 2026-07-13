@@ -269,7 +269,7 @@ export function App() {
             </select>
             <PresetRow
               checked={options.targetPlatforms.includes('admixer')}
-              label={`Admixer (${options.admixerMode === 'fullscreen' ? 'Fullscreen' : 'Halfscreen'})`}
+              label={`Admixer (${options.admixerMode})`}
               value="API 2.0"
               onChange={() => togglePlatform('admixer')}
               onSettings={() => setActiveDialog('settings')}
@@ -280,6 +280,7 @@ export function App() {
             >
               <option value="fullscreen">Admixer fullscreen</option>
               <option value="halfscreen">Admixer mobile halfscreen</option>
+              <option value="catfish">Admixer catfish</option>
             </select>
           </section>
 
@@ -516,6 +517,7 @@ export function App() {
                   <select value={options.admixerMode} onChange={(event) => updateOptions({ ...options, admixerMode: event.target.value as AdmixerMode })}>
                     <option value="fullscreen">Fullscreen</option>
                     <option value="halfscreen">Mobile halfscreen</option>
+                    <option value="catfish">CatFish</option>
                   </select>
                 </label>
                 <p>Changing settings clears generated outputs so stale packages are not reused.</p>

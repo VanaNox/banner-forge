@@ -129,6 +129,13 @@ describe('transformHtml for Admixer', () => {
     expect(html).toContain('src="js/body.js"');
   });
 
+  it('places the CatFish close button in the upper right corner with a 5px margin', () => {
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, admixerMode: 'catfish' });
+
+    expect(html).toContain('class="ad-close-button"');
+    expect(html).toContain('right:5px;top:5px');
+  });
+
   it('routes clicks through globalHTML5Api instead of window.open', () => {
     const html = transformHtml(dv360Html, 'admixer', baseOptions);
 
@@ -199,6 +206,23 @@ describe('convertDv360Banner', () => {
     ];
     expect(allEntries.some((path) => path.startsWith('__MACOSX'))).toBe(false);
     expect(Object.keys(fusifyZip.files).filter((path) => !fusifyZip.files[path].dir).every((path) => !path.includes('/'))).toBe(true);
+  });
+
+  it('builds a bottom-anchored fixed-height body.js for the Admixer CatFish format', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      admixerMode: 'catfish',
+      targetPlatforms: ['admixer']
+    });
+
+    const output = result.packages[0];
+    expect(output.fileName).toBe('catfish_Levia_DV360_admixer.zip');
+    const zip = await JSZip.loadAsync(output.blob);
+    const bodyJs = await zip.file('js/body.js')!.async('text');
+    // Висота CatFish — фіксована піксельна висота креативу, кріплення знизу по центру.
+    expect(bodyJs).toContain("vertical: 'bottom'");
+    expect(bodyJs).toContain("height: '600px'");
+    expect(output.validation.every((check) => check.passed)).toBe(true);
   });
 
   it('emits body.html for the AdPartner halfscreen format', async () => {
