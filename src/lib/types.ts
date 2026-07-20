@@ -2,7 +2,7 @@ export type TargetPlatform = 'umh' | 'fusify' | 'admixer';
 
 export type AdmixerMode = 'fullscreen' | 'halfscreen' | 'catfish';
 
-export type UmhFormat = 'standard' | 'fullscreen' | 'halfscreen';
+export type UmhFormat = 'standard' | 'fullscreen' | 'halfscreen' | 'catfish';
 
 export type FusifyFormat = 'standard' | 'halfscreen';
 

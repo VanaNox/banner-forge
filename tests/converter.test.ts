@@ -54,15 +54,16 @@ describe('readSourceCreative', () => {
 });
 
 describe('transformHtml for UMH', () => {
-  it('adds UMH metadata and keeps the platform-provided clickTag first', () => {
+  it('lets the platform own the click when auto_button is on (no clickTag, no window.open)', () => {
     const html = transformHtml(dv360Html, 'umh', baseOptions);
 
     expect(html).toContain('meta name="ad.type" content="banner"');
     expect(html).toContain('meta name="ad.size" content="width=300,height=600"');
     expect(html).toContain('meta name="ad.vars" content="auto_button=1"');
-    // Платформне значення clickTag має пріоритет над landing-фолбеком.
-    expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
-    expect(html).not.toMatch(/var\s+clickTag\s*=\s*["']/);
+    // auto_button = платформа сама вішає клік: жодного clickTag чи window.open у креативі,
+    // інакше отримуємо подвійний перехід (розбіжність із робочими еталонами).
+    expect(html).not.toMatch(/var\s+clickTag\s*=/);
+    expect(html).not.toContain('window.open(window.clickTag');
   });
 
   it('does not inject extra click wrappers around the creative', () => {
@@ -72,18 +73,29 @@ describe('transformHtml for UMH', () => {
     expect(html).not.toContain('admixAPI');
   });
 
-  it('uses the literal fullscreen/halfscreen ad.size for UMH special formats', () => {
+  it('uses the literal fullscreen/halfscreen/catfish ad.size for UMH special formats', () => {
     const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'fullscreen' });
     const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'halfscreen' });
+    const catfish = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'catfish' });
 
     expect(fullscreen).toContain('meta name="ad.size" content="fullscreen"');
     expect(halfscreen).toContain('meta name="ad.size" content="halfscreen"');
+    expect(catfish).toContain('meta name="ad.size" content="catfish"');
   });
 
-  it('reflects auto_button=0 when the auto click layer is disabled', () => {
+  it('carries a pixel height in ad.vars for the UMH catfish strip', () => {
+    const html = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'catfish' });
+
+    expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
+  });
+
+  it('keeps the creative clickTag and click handler when auto_button is disabled', () => {
     const html = transformHtml(dv360Html, 'umh', { ...baseOptions, umhAutoButton: false });
 
     expect(html).toContain('meta name="ad.vars" content="auto_button=0"');
+    // Без auto_button клік веде креатив через переданий платформою clickTag.
+    expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
+    expect(html).toContain('window.open(window.clickTag)');
   });
 });
 
@@ -113,6 +125,9 @@ describe('transformHtml for Fusify/AdPartner', () => {
     expect(html).toContain('onclick="return adPartner.click();"');
     expect(html).toContain('meta name="ad.size" content="width=300,height=600"');
     expect(html).toContain('meta name="viewport"');
+    // Паритет з еталоном: лінк на for_halfscreen_style.css + центрувальна сцена.
+    expect(html).toContain('for_halfscreen_style.css');
+    expect(html).toContain('ap-halfscreen-stage');
     // Клік іде тільки через adPartner.click(), без window.open і власного clickTag.
     expect(html).not.toContain('window.open(window.clickTag');
     expect(html).not.toContain('var clickTag');
@@ -237,7 +252,29 @@ describe('convertDv360Banner', () => {
     const zip = await JSZip.loadAsync(output.blob);
     expect(zip.file('body.html')).toBeTruthy();
     expect(zip.file('index.html')).toBeNull();
-    expect(await zip.file('body.html')!.async('text')).toContain('adPartner.click()');
+    const body = await zip.file('body.html')!.async('text');
+    expect(body).toContain('adPartner.click()');
+    // Паритет з еталоном adpartner-halfscreen: файл стилю присутній і підключений.
+    expect(zip.file('for_halfscreen_style.css')).toBeTruthy();
+    expect(body).toContain('for_halfscreen_style.css');
+    // Пакет AdPartner лишається пласким (без тек).
+    expect(Object.keys(zip.files).filter((path) => !zip.files[path].dir).every((path) => !path.includes('/'))).toBe(true);
+    expect(output.validation.every((check) => check.passed)).toBe(true);
+  });
+
+  it('builds a UMH catfish package with the catfish token and metadata', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      umhFormat: 'catfish',
+      targetPlatforms: ['umh']
+    });
+
+    const output = result.packages[0];
+    expect(output.fileName).toBe('banner_catfish@Levia_DV360.zip');
+    const zip = await JSZip.loadAsync(output.blob);
+    const html = await zip.file('index.html')!.async('text');
+    expect(html).toContain('meta name="ad.size" content="catfish"');
+    expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
     expect(output.validation.every((check) => check.passed)).toBe(true);
   });
 

@@ -252,6 +252,7 @@ export function App() {
               <option value="standard">UMH standard banner (ad.size WxH)</option>
               <option value="fullscreen">UMH fullscreen</option>
               <option value="halfscreen">UMH halfscreen</option>
+              <option value="catfish">UMH catfish</option>
             </select>
             <PresetRow
               checked={options.targetPlatforms.includes('fusify')}
@@ -503,6 +504,7 @@ export function App() {
                     <option value="standard">Standard banner</option>
                     <option value="fullscreen">Fullscreen</option>
                     <option value="halfscreen">Halfscreen</option>
+                    <option value="catfish">CatFish</option>
                   </select>
                 </label>
                 <label>

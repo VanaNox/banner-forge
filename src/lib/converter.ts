@@ -12,6 +12,48 @@ const DEFAULT_OPTIONS: ConversionOptions = {
 };
 
 const ADPARTNER_IFRAME_SRC = '//a4p.adpartner.pro/adpartner-iframe.min.js';
+const FUSIFY_HALFSCREEN_CSS_FILE = 'for_halfscreen_style.css';
+
+// Паритет із робочим adpartner-halfscreen еталоном: device-width zoom для фіксованого
+// креативу. Значення відкалібровані під нативну halfscreen-ширину 800px (правило
+// «подавати DV360-джерело правильного розміру»). Canvas-еталон робить це через
+// makeResponsive; Bannerify-креатив фіксований у px, тож масштаб дають ці медіазапити.
+const FUSIFY_HALFSCREEN_CSS = `@media (min-width: 319px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:63.2%;}
+@-moz-document url-prefix() {html {transform: scale(0.4); transform-origin: left top; width: calc(100% / 0.4); height: calc(100% / 0.4);}}
+}
+@media (min-width: 359px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:67.1%;}
+@-moz-document url-prefix() {html {transform: scale(0.45); transform-origin: left top; width: calc(100% / 0.45); height: calc(100% / 0.45);}}
+}
+@media (min-width: 374px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:68.6%;}
+@-moz-document url-prefix() {html {transform: scale(0.47); transform-origin: left top; width: calc(100% / 0.47); height: calc(100% / 0.47);}}
+}
+@media (min-width: 383px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:69.4%;}
+@-moz-document url-prefix() {html {transform: scale(0.48); transform-origin: left top; width: calc(100% / 0.48); height: calc(100% / 0.48);}}
+}
+@media (min-width: 389px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:69.8%;}
+@-moz-document url-prefix() {html {transform: scale(0.488); transform-origin: left top; width: calc(100% / 0.488); height: calc(100% / 0.488);}}
+}
+@media (min-width: 392px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:70.1%;}
+@-moz-document url-prefix() {html {transform: scale(0.492); transform-origin: left top; width: calc(100% / 0.492); height: calc(100% / 0.492);}}
+}
+@media (min-width: 411px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:72%;}
+@-moz-document url-prefix() {html {transform: scale(0.515); transform-origin: left top; width: calc(100% / 0.515); height: calc(100% / 0.515);}}
+}
+@media (min-width: 413px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:72.2%;}
+@-moz-document url-prefix() {html {transform: scale(0.5175); transform-origin: left top; width: calc(100% / 0.5175); height: calc(100% / 0.5175);}}
+}
+@media (min-width: 427px) {
+html, body {margin: 0 0 0 0;overflow: hidden; zoom:73.2%;}
+@-moz-document url-prefix() {html {transform: scale(0.535); transform-origin: left top; width: calc(100% / 0.535); height: calc(100% / 0.535);}}
+}`;
 
 type TextMap = Map<string, string>;
 type AssetPathMap = Map<string, string>;
@@ -117,11 +159,18 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
     ADMIXER_HARNESS_FOLDERS.forEach((folder) => out.folder(folder));
   }
 
+  const emitsHalfscreenCss = platform === 'fusify' && options.fusifyFormat === 'halfscreen';
+  if (emitsHalfscreenCss) {
+    // Паритет з еталоном: робочий adpartner-halfscreen пакет містить цей файл.
+    out.file(FUSIFY_HALFSCREEN_CSS_FILE, FUSIFY_HALFSCREEN_CSS);
+  }
+
   const blob = await out.generateAsync({ type: 'blob', compression: 'DEFLATE' });
   const outputEntries = [
     ...assetPlan.files.map((file) => file.outputPath),
     entryName,
-    ...(platform === 'admixer' ? ['js/body.js', ...ADMIXER_HARNESS_FILES.map((file) => file.path)] : [])
+    ...(platform === 'admixer' ? ['js/body.js', ...ADMIXER_HARNESS_FILES.map((file) => file.path)] : []),
+    ...(emitsHalfscreenCss ? [FUSIFY_HALFSCREEN_CSS_FILE] : [])
   ];
   validation.push(...validatePlatformPackage(platform, outputEntries, transformedHtml, blob.size, entryName, options));
   validation.filter((check) => !check.passed).forEach((check) => warnings.push(`${labelPlatform(platform)}: ${check.label}`));
@@ -169,12 +218,17 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
   const normalized = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
 
   if (platform === 'umh') {
-    // UMH передає clickTag у банер сама; жорстке перевизначення ламає трекінг,
-    // тому декларація лишає пріоритет за платформним значенням.
-    return addHeadMeta(upsertClickTag(normalized, landingUrl), [
+    // Коли ввімкнено auto_button, клік належить платформі: у робочих еталонах немає
+    // ні clickTag, ні власного window.open у креативі. Якщо лишити обидва — виходить
+    // подвійний перехід, тож прибираємо клік креативу і не інжектимо clickTag.
+    // Коли auto_button вимкнено — клік веде креатив через переданий clickTag.
+    const clickReady = options.umhAutoButton
+      ? removeClickTagDeclaration(neutralizeDirectClicks(normalized))
+      : upsertClickTag(normalized, landingUrl);
+    return addHeadMeta(clickReady, [
       ['ad.type', 'banner'],
       ['ad.size', umhAdSizeContent(html, options.umhFormat)],
-      ['ad.vars', `auto_button=${options.umhAutoButton ? '1' : '0'}`]
+      ['ad.vars', umhAdVars(html, options)]
     ]);
   }
 
@@ -190,15 +244,24 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
 }
 
 function buildFusifyHalfscreenHtml(html: string, originalHtml: string): string {
-  const neutralized = neutralizeDirectClicks(html)
-    .replace(/<script[^>]*>\s*var\s+clickTag[\s\S]*?<\/script>/gi, '');
+  const neutralized = removeClickTagDeclaration(neutralizeDirectClicks(html));
   const withScript = ensureHeadScript(ensureViewportMeta(neutralized), ADPARTNER_IFRAME_SRC);
-  const withMeta = addHeadMeta(withScript, [
+  const withCss = ensureHeadStylesheet(withScript, FUSIFY_HALFSCREEN_CSS_FILE);
+  const withMeta = addHeadMeta(withCss, [
     ['ad.size', adSizeContent(originalHtml)]
   ]);
+  const { width, height } = extractAdSize(originalHtml);
   const bodyInner = extractBodyInner(withMeta);
+  // Центруємо фіксований креатив у контейнері так само, як canvas-еталон
+  // (#animation_container{margin:auto;left/right/top/bottom:-100%}); масштаб під
+  // ширину пристрою дає for_halfscreen_style.css.
+  const centerStyle = width && height
+    ? `position:absolute;margin:auto;left:-100%;right:-100%;top:-100%;bottom:-100%;width:${width}px;height:${height}px;`
+    : 'position:absolute;margin:auto;left:-100%;right:-100%;top:-100%;bottom:-100%;';
   const wrapped = `<div id="container" style="position:absolute;left:0;top:0;width:100%;height:100%;" onclick="return adPartner.click();">
+<div class="ap-halfscreen-stage" style="${centerStyle}">
 ${bodyInner}
+</div>
 </div>`;
   return replaceBodyInner(withMeta, wrapped);
 }
@@ -316,6 +379,13 @@ function ensureHeadScript(html: string, src: string): string {
     return html;
   }
   return html.replace(/<\/head>/i, `<script type="text/javascript" src="${src}"></script>\n</head>`);
+}
+
+function ensureHeadStylesheet(html: string, href: string): string {
+  if (html.includes(href)) {
+    return html;
+  }
+  return html.replace(/<\/head>/i, `<link rel="stylesheet" type="text/css" href="${href}">\n</head>`);
 }
 
 function findCreativeEntry(htmlByPath: TextMap): string {
@@ -467,11 +537,29 @@ function fixedSizeScalingNote(metadata: CreativeMetadata, platform: TargetPlatfo
 }
 
 function umhAdSizeContent(html: string, format: UmhFormat): string {
-  // Для fullscreen/halfscreen UMH чекає літеральне значення, а не width/height.
-  if (format === 'fullscreen' || format === 'halfscreen') {
+  // Для fullscreen/halfscreen/catfish UMH чекає літеральне значення, а не width/height.
+  if (format === 'fullscreen' || format === 'halfscreen' || format === 'catfish') {
     return format;
   }
   return adSizeContent(html);
+}
+
+function umhAdVars(html: string, options: ConversionOptions): string {
+  const autoButton = options.umhAutoButton ? '1' : '0';
+  if (options.umhFormat === 'catfish') {
+    // CatFish на UMH — прилипла до низу смуга: ad.vars несе піксельну висоту показу.
+    return `height=${umhCatfishHeight(html)},auto_button=${autoButton}`;
+  }
+  return `auto_button=${autoButton}`;
+}
+
+function umhCatfishHeight(html: string): number {
+  const { height } = extractAdSize(html);
+  return height && height > 0 && height <= 400 ? height : 120;
+}
+
+function removeClickTagDeclaration(html: string): string {
+  return html.replace(/<script[^>]*>\s*var\s+clickTag[\s\S]*?<\/script>/gi, '');
 }
 
 function stripBase(path: string, basePath: string): string {
