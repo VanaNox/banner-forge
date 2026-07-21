@@ -149,7 +149,21 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
     }
   }
 
-  out.file(entryName, transformedHtml);
+  // AdPartner: виносимо великий inline-рантайм креативу в окремий <size>.js, щоб
+  // структура була index.html + <size>.js + assets, як у ручних Adobe Animate еталонах.
+  let entryHtml = transformedHtml;
+  let externalJsName: string | undefined;
+  if (platform === 'fusify') {
+    const jsName = `${creativeSizeToken(source.metadata)}.js`;
+    const externalized = externalizeInlineRuntime(transformedHtml, jsName);
+    if (externalized.js) {
+      entryHtml = externalized.html;
+      externalJsName = jsName;
+      out.file(jsName, externalized.js);
+    }
+  }
+
+  out.file(entryName, entryHtml);
 
   if (platform === 'admixer') {
     out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen', source.metadata.height));
@@ -169,10 +183,11 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
   const outputEntries = [
     ...assetPlan.files.map((file) => file.outputPath),
     entryName,
+    ...(externalJsName ? [externalJsName] : []),
     ...(platform === 'admixer' ? ['js/body.js', ...ADMIXER_HARNESS_FILES.map((file) => file.path)] : []),
     ...(emitsHalfscreenCss ? [FUSIFY_HALFSCREEN_CSS_FILE] : [])
   ];
-  validation.push(...validatePlatformPackage(platform, outputEntries, transformedHtml, blob.size, entryName, options));
+  validation.push(...validatePlatformPackage(platform, outputEntries, entryHtml, blob.size, entryName, options));
   validation.filter((check) => !check.passed).forEach((check) => warnings.push(`${labelPlatform(platform)}: ${check.label}`));
 
   const sizeLimit = platformSizeLimit(platform);
@@ -233,11 +248,15 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
   }
 
   if (platform === 'fusify') {
+    // DV360-превʼю лишає viewport із maximum-scale/user-scalable — у ручних
+    // AdPartner-еталонах його немає, тож прибираємо (для halfscreen далі
+    // додається чистий width=device-width viewport).
+    const cleaned = removeDv360PreviewViewport(normalized);
     if (options.fusifyFormat === 'halfscreen') {
-      return buildFusifyHalfscreenHtml(normalized, html);
+      return buildFusifyHalfscreenHtml(cleaned, html);
     }
     // Стандартні розміри AdPartner приймає як звичайний креатив без власного API.
-    return upsertClickTag(normalized, landingUrl);
+    return upsertClickTag(cleaned, landingUrl);
   }
 
   return buildAdmixerHtml(normalized, options.admixerMode);
@@ -560,6 +579,37 @@ function umhCatfishHeight(html: string): number {
 
 function removeClickTagDeclaration(html: string): string {
   return html.replace(/<script[^>]*>\s*var\s+clickTag[\s\S]*?<\/script>/gi, '');
+}
+
+function removeDv360PreviewViewport(html: string): string {
+  // Прибираємо лише DV360-превʼю viewport (maximum-scale/user-scalable); чистий
+  // width=device-width viewport не чіпаємо.
+  return html.replace(/<meta\s+name=["']viewport["'][^>]*>\s*/gi, (tag) =>
+    /maximum-scale|user-scalable/i.test(tag) ? '' : tag
+  );
+}
+
+function creativeSizeToken(metadata: CreativeMetadata): string {
+  return metadata.width && metadata.height ? `${metadata.width}x${metadata.height}` : 'creative';
+}
+
+// Виносить найбільший inline-<script> (рантайм анімації Bannerify) в окремий файл,
+// замінюючи його на <script src="...">. Малі скрипти (напр. clickTag) лишаються.
+function externalizeInlineRuntime(html: string, jsFileName: string): { html: string; js: string | null } {
+  const scriptRe = /<script\b(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  let best: { full: string; body: string } | null = null;
+  while ((match = scriptRe.exec(html)) !== null) {
+    const body = match[1];
+    if (!best || body.length > best.body.length) {
+      best = { full: match[0], body };
+    }
+  }
+  if (!best || best.body.trim().length < 400) {
+    return { html, js: null };
+  }
+  const replacement = `<script type="text/javascript" src="${jsFileName}"></script>`;
+  return { html: html.replace(best.full, replacement), js: best.body };
 }
 
 function stripBase(path: string, basePath: string): string {

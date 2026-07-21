@@ -41,6 +41,30 @@ async function makeDv360File(fileName = 'Levia_DV360.zip') {
   return new File([await makeDv360Blob()], fileName, { type: 'application/zip' });
 }
 
+// DV360 creative with a realistic large inline runtime + a DV360-preview viewport,
+// so the AdPartner JS-externalization and viewport cleanup paths are exercised.
+const dv360BigRuntime = `(function(){var pad="${'a'.repeat(1500)}";document.getElementById('b_1').addEventListener('click',function(){window.open(window.clickTag);});})();`;
+const dv360BigHtml = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="ad.size" content="width=300,height=250">
+<script type="text/javascript">var clickTag = "https://www.google.com";</script>
+</head>
+<body>
+<div id="b_1"><img src="images/logo.png"></div>
+<script type="text/javascript">${dv360BigRuntime}</script>
+</body>
+</html>`;
+
+async function makeBigDv360File(fileName = 'Levia_DV360.zip') {
+  const zip = new JSZip();
+  zip.file('index.html', dv360BigHtml);
+  zip.file('images/logo.png', 'fake-image');
+  return new File([await zip.generateAsync({ type: 'blob' })], fileName, { type: 'application/zip' });
+}
+
 describe('readSourceCreative', () => {
   it('resolves the nested DV360 iframe entrypoint and metadata', async () => {
     const source = await readSourceCreative(await makeDv360Blob());
@@ -116,6 +140,17 @@ describe('transformHtml for Fusify/AdPartner', () => {
     expect(html).toContain('src="frame 1.png"');
     expect(html).toContain('src="creative.js"');
     expect(html).not.toContain('images/frame 1.png');
+  });
+
+  it('removes the DV360 preview viewport for AdPartner', () => {
+    const withPreview = dv360Html.replace(
+      '<meta charset="utf-8">',
+      '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>'
+    );
+    const html = transformHtml(withPreview, 'fusify', baseOptions);
+
+    expect(html).not.toContain('maximum-scale');
+    expect(html).not.toContain('user-scalable');
   });
 
   it('builds the halfscreen format around body.html conventions', () => {
@@ -276,6 +311,45 @@ describe('convertDv360Banner', () => {
     expect(html).toContain('meta name="ad.size" content="catfish"');
     expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
     expect(output.validation.every((check) => check.passed)).toBe(true);
+  });
+
+  it('externalizes the AdPartner creative runtime into a size-named .js file', async () => {
+    const result = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      fusifyFormat: 'standard',
+      targetPlatforms: ['fusify']
+    });
+
+    const zip = await JSZip.loadAsync(result.packages[0].blob);
+    expect(zip.file('300x250.js')).toBeTruthy();
+    const html = await zip.file('index.html')!.async('text');
+    // Рантайм винесено в окремий файл і підключено через <script src>.
+    expect(html).toContain('src="300x250.js"');
+    expect(html).not.toContain('a'.repeat(1500));
+    const js = await zip.file('300x250.js')!.async('text');
+    expect(js).toContain('addEventListener');
+    // DV360-превʼю viewport прибрано.
+    expect(html).not.toContain('maximum-scale');
+    // Плаский архів без тек.
+    expect(Object.keys(zip.files).filter((path) => !zip.files[path].dir).every((path) => !path.includes('/'))).toBe(true);
+    expect(result.packages[0].validation.every((check) => check.passed)).toBe(true);
+  });
+
+  it('externalizes the runtime for the AdPartner halfscreen format too', async () => {
+    const result = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      fusifyFormat: 'halfscreen',
+      targetPlatforms: ['fusify']
+    });
+
+    const zip = await JSZip.loadAsync(result.packages[0].blob);
+    expect(zip.file('300x250.js')).toBeTruthy();
+    const body = await zip.file('body.html')!.async('text');
+    expect(body).toContain('src="300x250.js"');
+    // Прев'ю-viewport прибрано, натомість доданий чистий width=device-width.
+    expect(body).not.toContain('maximum-scale');
+    expect(body).toContain('meta name="viewport"');
+    expect(result.packages[0].validation.every((check) => check.passed)).toBe(true);
   });
 
   it('only builds selected target platforms', async () => {
