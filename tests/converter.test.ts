@@ -389,6 +389,32 @@ describe('convertDv360Banner', () => {
     expect(result.packages[0].validation.every((check) => check.passed)).toBe(true);
   });
 
+  it('externalizes the Admixer creative runtime into js/<mode>.js next to js/body.js', async () => {
+    const full = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      admixerMode: 'fullscreen',
+      targetPlatforms: ['admixer']
+    });
+    const fullZip = await JSZip.loadAsync(full.packages[0].blob);
+    // Анімація в js/fullscreen.js, API-міст лишається в js/body.js.
+    expect(fullZip.file('js/fullscreen.js')).toBeTruthy();
+    expect(fullZip.file('js/body.js')).toBeTruthy();
+    const body = await fullZip.file('body.html')!.async('text');
+    expect(body).toContain('src="js/fullscreen.js"');
+    expect(body).toContain('src="js/body.js"');
+    expect(body).not.toContain('a'.repeat(1500));
+    expect(full.packages[0].validation.every((c) => c.passed)).toBe(true);
+
+    const half = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      admixerMode: 'halfscreen',
+      targetPlatforms: ['admixer']
+    });
+    const halfZip = await JSZip.loadAsync(half.packages[0].blob);
+    expect(halfZip.file('js/half.js')).toBeTruthy();
+    expect(await halfZip.file('body.html')!.async('text')).toContain('src="js/half.js"');
+  });
+
   it('only builds selected target platforms', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',

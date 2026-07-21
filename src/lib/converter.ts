@@ -149,11 +149,12 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
     }
   }
 
-  // AdPartner і UMH: виносимо великий inline-рантайм креативу в окремий JS, щоб
-  // структура була index.html + <name>.js + assets, як у ручних Adobe Animate еталонах.
+  // AdPartner, UMH і Admixer: виносимо великий inline-рантайм креативу в окремий JS,
+  // щоб структура була <entry> + <name>.js + assets, як у ручних Adobe Animate еталонах
+  // (Admixer тримає його в js/<name>.js поруч із js/body.js).
   let entryHtml = transformedHtml;
   let externalJsName: string | undefined;
-  if (platform === 'fusify' || platform === 'umh') {
+  if (platform === 'fusify' || platform === 'umh' || platform === 'admixer') {
     const jsName = runtimeJsFileName(platform, options, source.metadata);
     const externalized = externalizeInlineRuntime(transformedHtml, jsName);
     if (externalized.js) {
@@ -603,6 +604,12 @@ function runtimeJsFileName(platform: TargetPlatform, options: ConversionOptions,
     if (options.umhFormat === 'fullscreen') return 'fullscreen.js';
     if (options.umhFormat === 'halfscreen') return 'Halfscreen.js';
     if (options.umhFormat === 'catfish') return 'CatFish.js';
+  }
+  // Admixer-еталони тримають анімацію в js/<name>.js поруч із js/body.js.
+  if (platform === 'admixer') {
+    if (options.admixerMode === 'halfscreen') return 'js/half.js';
+    if (options.admixerMode === 'catfish') return 'js/catfish.js';
+    return 'js/fullscreen.js';
   }
   return `${creativeSizeToken(metadata)}.js`;
 }
