@@ -121,6 +121,17 @@ describe('transformHtml for UMH', () => {
     expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
     expect(html).toContain('window.open(window.clickTag)');
   });
+
+  it('removes the DV360 preview viewport for UMH', () => {
+    const withPreview = dv360Html.replace(
+      '<meta charset="utf-8">',
+      '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>'
+    );
+    const html = transformHtml(withPreview, 'umh', baseOptions);
+
+    expect(html).not.toContain('maximum-scale');
+    expect(html).not.toContain('user-scalable');
+  });
 });
 
 describe('transformHtml for Fusify/AdPartner', () => {
@@ -311,6 +322,32 @@ describe('convertDv360Banner', () => {
     expect(html).toContain('meta name="ad.size" content="catfish"');
     expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
     expect(output.validation.every((check) => check.passed)).toBe(true);
+  });
+
+  it('externalizes the UMH runtime into a format-named .js file at the root', async () => {
+    const half = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      umhFormat: 'halfscreen',
+      targetPlatforms: ['umh']
+    });
+    const halfZip = await JSZip.loadAsync(half.packages[0].blob);
+    // UMH-еталон називає файл за форматом.
+    expect(halfZip.file('Halfscreen.js')).toBeTruthy();
+    const halfHtml = await halfZip.file('index.html')!.async('text');
+    expect(halfHtml).toContain('src="Halfscreen.js"');
+    expect(halfHtml).not.toContain('a'.repeat(1500));
+    expect(halfHtml).not.toContain('maximum-scale');
+    expect(half.packages[0].validation.every((c) => c.passed)).toBe(true);
+
+    // Стандартний формат — за розміром креативу.
+    const std = await convertDv360Banner(await makeBigDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      umhFormat: 'standard',
+      targetPlatforms: ['umh']
+    });
+    const stdZip = await JSZip.loadAsync(std.packages[0].blob);
+    expect(stdZip.file('300x250.js')).toBeTruthy();
+    expect(await stdZip.file('index.html')!.async('text')).toContain('src="300x250.js"');
   });
 
   it('externalizes the AdPartner creative runtime into a size-named .js file', async () => {

@@ -149,12 +149,12 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
     }
   }
 
-  // AdPartner: виносимо великий inline-рантайм креативу в окремий <size>.js, щоб
-  // структура була index.html + <size>.js + assets, як у ручних Adobe Animate еталонах.
+  // AdPartner і UMH: виносимо великий inline-рантайм креативу в окремий JS, щоб
+  // структура була index.html + <name>.js + assets, як у ручних Adobe Animate еталонах.
   let entryHtml = transformedHtml;
   let externalJsName: string | undefined;
-  if (platform === 'fusify') {
-    const jsName = `${creativeSizeToken(source.metadata)}.js`;
+  if (platform === 'fusify' || platform === 'umh') {
+    const jsName = runtimeJsFileName(platform, options, source.metadata);
     const externalized = externalizeInlineRuntime(transformedHtml, jsName);
     if (externalized.js) {
       entryHtml = externalized.html;
@@ -233,13 +233,16 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
   const normalized = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
 
   if (platform === 'umh') {
+    // DV360-превʼю лишає viewport із maximum-scale/user-scalable — у UMH-еталонах
+    // його немає, тож прибираємо (структурний паритет).
+    const cleaned = removeDv360PreviewViewport(normalized);
     // Коли ввімкнено auto_button, клік належить платформі: у робочих еталонах немає
     // ні clickTag, ні власного window.open у креативі. Якщо лишити обидва — виходить
     // подвійний перехід, тож прибираємо клік креативу і не інжектимо clickTag.
     // Коли auto_button вимкнено — клік веде креатив через переданий clickTag.
     const clickReady = options.umhAutoButton
-      ? removeClickTagDeclaration(neutralizeDirectClicks(normalized))
-      : upsertClickTag(normalized, landingUrl);
+      ? removeClickTagDeclaration(neutralizeDirectClicks(cleaned))
+      : upsertClickTag(cleaned, landingUrl);
     return addHeadMeta(clickReady, [
       ['ad.type', 'banner'],
       ['ad.size', umhAdSizeContent(html, options.umhFormat)],
@@ -591,6 +594,17 @@ function removeDv360PreviewViewport(html: string): string {
 
 function creativeSizeToken(metadata: CreativeMetadata): string {
   return metadata.width && metadata.height ? `${metadata.width}x${metadata.height}` : 'creative';
+}
+
+function runtimeJsFileName(platform: TargetPlatform, options: ConversionOptions, metadata: CreativeMetadata): string {
+  // UMH-еталони називають JS за форматом (Halfscreen.js / fullscreen.js / CatFish.js);
+  // стандарт і AdPartner — за розміром креативу (<width>x<height>.js), як у їхніх еталонах.
+  if (platform === 'umh') {
+    if (options.umhFormat === 'fullscreen') return 'fullscreen.js';
+    if (options.umhFormat === 'halfscreen') return 'Halfscreen.js';
+    if (options.umhFormat === 'catfish') return 'CatFish.js';
+  }
+  return `${creativeSizeToken(metadata)}.js`;
 }
 
 // Виносить найбільший inline-<script> (рантайм анімації Bannerify) в окремий файл,
