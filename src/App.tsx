@@ -384,7 +384,9 @@ export function App() {
           {bundlePackage && (
             <DownloadButton output={bundlePackage} className="bundle-button">
               <Download size={20} />
-              Download bundle ({platformPackages.length} files)
+              {platformPackages.length === 1
+                ? 'Download package'
+                : `Download bundle (${platformPackages.length} files)`}
             </DownloadButton>
           )}
 

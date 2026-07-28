@@ -417,6 +417,37 @@ describe('convertDv360Banner', () => {
     expect(await halfZip.file('body.html')!.async('text')).toContain('src="js/half.js"');
   });
 
+  it('returns the platform archive itself as the download when one platform is selected', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      fusifyFormat: 'standard',
+      targetPlatforms: ['fusify']
+    });
+
+    const platformPkg = result.packages.find((pkg) => pkg.platform === 'fusify')!;
+    const download = result.packages.find((pkg) => pkg.platform === 'bundle')!;
+
+    // Без обгортки zip-у-zip: те саме імʼя й той самий вміст, що в платформного пакета.
+    expect(download.fileName).toBe('300x600_Levia_DV360_adpartner.zip');
+    expect(download.sizeBytes).toBe(platformPkg.sizeBytes);
+    const zip = await JSZip.loadAsync(download.blob);
+    expect(zip.file('index.html')).toBeTruthy();
+    expect(Object.keys(zip.files).some((name) => name.endsWith('.zip'))).toBe(false);
+  });
+
+  it('still wraps multiple platforms into a named bundle archive', async () => {
+    const result = await convertDv360Banner(await makeDv360File(), {
+      landingUrl: 'https://example.com/landing',
+      targetPlatforms: ['umh', 'fusify']
+    });
+
+    const download = result.packages.find((pkg) => pkg.platform === 'bundle')!;
+    expect(download.fileName).toBe('Levia_DV360_converted_bundle.zip');
+    const zip = await JSZip.loadAsync(download.blob);
+    expect(zip.file('banner_300x600@Levia_DV360.zip')).toBeTruthy();
+    expect(zip.file('300x600_Levia_DV360_adpartner.zip')).toBeTruthy();
+  });
+
   it('only builds selected target platforms', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',

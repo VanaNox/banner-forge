@@ -212,6 +212,20 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
 }
 
 async function buildBundle(outputs: OutputPackage[], sourceFileName: string): Promise<OutputPackage> {
+  // Один вибраний формат — віддаємо сам платформний архів під його власним іменем.
+  // Обгортка zip-у-zip тут тільки заважала б: платформа очікує готовий пакет.
+  if (outputs.length === 1) {
+    const single = outputs[0];
+    return {
+      platform: 'bundle',
+      fileName: single.fileName,
+      blob: single.blob,
+      sizeBytes: single.sizeBytes,
+      warnings: [],
+      validation: [{ label: 'Single platform package (no bundle wrapper)', passed: true }]
+    };
+  }
+
   const bundle = new JSZip();
   outputs.forEach((output) => bundle.file(output.fileName, output.blob));
   const blob = await bundle.generateAsync({ type: 'blob', compression: 'DEFLATE' });
