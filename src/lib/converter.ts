@@ -611,6 +611,10 @@ function runtimeJsFileName(platform: TargetPlatform, options: ConversionOptions,
     if (options.admixerMode === 'catfish') return 'js/catfish.js';
     return 'js/fullscreen.js';
   }
+  // AdPartner halfscreen-еталон називає JS за форматом (Halfscreen.js), а не за розміром.
+  if (platform === 'fusify' && options.fusifyFormat === 'halfscreen') {
+    return 'Halfscreen.js';
+  }
   return `${creativeSizeToken(metadata)}.js`;
 }
 

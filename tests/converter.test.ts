@@ -380,9 +380,11 @@ describe('convertDv360Banner', () => {
     });
 
     const zip = await JSZip.loadAsync(result.packages[0].blob);
-    expect(zip.file('300x250.js')).toBeTruthy();
+    // Еталон adpartner-halfscreen називає JS за форматом (Halfscreen.js), не за розміром.
+    expect(zip.file('Halfscreen.js')).toBeTruthy();
+    expect(zip.file('300x250.js')).toBeNull();
     const body = await zip.file('body.html')!.async('text');
-    expect(body).toContain('src="300x250.js"');
+    expect(body).toContain('src="Halfscreen.js"');
     // Прев'ю-viewport прибрано, натомість доданий чистий width=device-width.
     expect(body).not.toContain('maximum-scale');
     expect(body).toContain('meta name="viewport"');
