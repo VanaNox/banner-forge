@@ -10,6 +10,7 @@ import {
   HelpCircle,
   Hexagon,
   Loader2,
+  Lock,
   Monitor,
   Moon,
   PackageCheck,
@@ -23,16 +24,26 @@ import {
   X
 } from 'lucide-react';
 import { convertDv360Banner, readSourceCreative } from './lib/converter';
+import {
+  FORMAT_MATRIX,
+  acceptedSizes,
+  acceptsSize,
+  describeSizes,
+  formatSpec,
+  platformsForFormat,
+  supportsFormat,
+  type Dimensions
+} from './lib/formatMatrix';
 import { createPackagePreviewUrl } from './lib/preview';
-import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, FusifyFormat, OutputPackage, TargetPlatform, UmhFormat } from './lib/types';
+import type { ConversionOptions, ConversionResult, CreativeMetadata, FormatKey, OutputPackage, TargetPlatform } from './lib/types';
+
+const ALL_PLATFORMS: TargetPlatform[] = ['umh', 'fusify', 'admixer'];
 
 const initialOptions: ConversionOptions = {
   landingUrl: 'https://www.example.com/summer-sale',
-  admixerMode: 'fullscreen',
-  umhFormat: 'standard',
-  fusifyFormat: 'standard',
+  formatKey: 'halfscreen',
   umhAutoButton: true,
-  targetPlatforms: ['umh', 'fusify', 'admixer']
+  targetPlatforms: platformsForFormat('halfscreen')
 };
 
 type PreviewState = {
@@ -63,6 +74,8 @@ export function App() {
   const [activeDialog, setActiveDialog] = useState<'settings' | 'help' | 'validation' | null>(null);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [toast, setToast] = useState<string | null>(null);
+  // Формат зафіксовано розпізнаванням; користувач може розблокувати й переобрати вручну.
+  const [formatLocked, setFormatLocked] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -76,6 +89,8 @@ export function App() {
   }, [toast]);
 
   const activeMetadata = result?.metadata ?? metadata;
+  const sourceSize = creativeSize(activeMetadata);
+  const activeFormat = formatSpec(options.formatKey);
   const platformPackages = useMemo(
     () => result?.packages.filter((pkg): pkg is OutputPackage & { platform: TargetPlatform } => pkg.platform !== 'bundle') ?? [],
     [result]
@@ -109,6 +124,17 @@ export function App() {
     try {
       const inspected = await readSourceCreative(nextFile);
       setMetadata(inspected.metadata);
+      // Розпізнали формат — фіксуємо його разом із платформами, які його замовляють,
+      // щоб після завантаження нічого натискати не треба було.
+      const detected = inspected.metadata.detectedFormat;
+      setFormatLocked(Boolean(detected));
+      if (detected) {
+        setOptions((current) => ({
+          ...current,
+          formatKey: detected,
+          targetPlatforms: platformsForFormat(detected, creativeSize(inspected.metadata))
+        }));
+      }
     } catch (inspectionError) {
       setError(inspectionError instanceof Error ? inspectionError.message : 'Could not inspect uploaded package.');
     } finally {
@@ -119,6 +145,11 @@ export function App() {
   function onDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     void handleFile(event.dataTransfer.files[0]);
+  }
+
+  function selectFormat(formatKey: FormatKey) {
+    // Зміна формату переобирає платформи: у матриці кожен формат замовляє свій набір.
+    updateOptions({ ...options, formatKey, targetPlatforms: platformsForFormat(formatKey, sourceSize) });
   }
 
   function togglePlatform(platform: TargetPlatform) {
@@ -215,6 +246,11 @@ export function App() {
             <h3>Detected Banner Metadata</h3>
             <dl>
               <MetadataRow label="Ad unit size" value={formatDimensions(activeMetadata)} />
+              <MetadataRow
+                label="Format"
+                value={activeMetadata ? (activeMetadata.detectedFormat ? formatSpec(activeMetadata.detectedFormat).label : 'Not recognised') : '-'}
+              />
+              <MetadataRow label="Size read from" value={activeMetadata?.sizeSource ?? '-'} />
               <MetadataRow label="Environment" value="HTML5" />
               <MetadataRow label="Initial load" value={file ? formatBytes(file.size) : '-'} />
               <MetadataRow label="Total files" value={activeMetadata ? String(activeMetadata.assetCount) : '-'} />
@@ -237,52 +273,56 @@ export function App() {
           </section>
 
           <section className="mini-panel">
-            <h3>Format Presets</h3>
-            <PresetRow
-              checked={options.targetPlatforms.includes('umh')}
-              label={`UMH (${options.umhFormat})`}
-              value={options.umhAutoButton ? 'auto click' : 'creative click'}
-              onChange={() => togglePlatform('umh')}
-              onSettings={() => setActiveDialog('settings')}
-            />
-            <select
-              value={options.umhFormat}
-              onChange={(event) => updateOptions({ ...options, umhFormat: event.target.value as UmhFormat })}
-            >
-              <option value="standard">UMH standard banner (ad.size WxH)</option>
-              <option value="fullscreen">UMH fullscreen</option>
-              <option value="halfscreen">UMH halfscreen</option>
-              <option value="catfish">UMH catfish</option>
-            </select>
-            <PresetRow
-              checked={options.targetPlatforms.includes('fusify')}
-              label={`Fusify / AdPartner (${options.fusifyFormat})`}
-              value={options.fusifyFormat === 'halfscreen' ? 'body.html + API' : 'flat index.html'}
-              onChange={() => togglePlatform('fusify')}
-              onSettings={() => setActiveDialog('settings')}
-            />
-            <select
-              value={options.fusifyFormat}
-              onChange={(event) => updateOptions({ ...options, fusifyFormat: event.target.value as FusifyFormat })}
-            >
-              <option value="standard">AdPartner standard banner (index.html)</option>
-              <option value="halfscreen">AdPartner halfscreen (body.html)</option>
-            </select>
-            <PresetRow
-              checked={options.targetPlatforms.includes('admixer')}
-              label={`Admixer (${options.admixerMode})`}
-              value="API 2.0"
-              onChange={() => togglePlatform('admixer')}
-              onSettings={() => setActiveDialog('settings')}
-            />
-            <select
-              value={options.admixerMode}
-              onChange={(event) => updateOptions({ ...options, admixerMode: event.target.value as AdmixerMode })}
-            >
-              <option value="fullscreen">Admixer fullscreen</option>
-              <option value="halfscreen">Admixer mobile halfscreen</option>
-              <option value="catfish">Admixer catfish</option>
-            </select>
+            <h3>Creative Format</h3>
+            {formatLocked ? (
+              <div className="format-lock">
+                <Lock size={15} />
+                <div>
+                  <strong>{activeFormat.label}</strong>
+                  <span>
+                    Detected from {activeMetadata?.sizeSource ?? 'the package'}
+                    {activeMetadata?.detectedScale === 2 ? ' / 2x source' : ''}
+                  </span>
+                </div>
+                <button type="button" onClick={() => setFormatLocked(false)}>Change</button>
+              </div>
+            ) : (
+              <>
+                <FormatSelect value={options.formatKey} onChange={selectFormat} />
+                {file && !activeMetadata?.detectedFormat && (
+                  <p className="panel-note warn">
+                    {sourceSize
+                      ? `${sourceSize.width}x${sourceSize.height} is not in the delivery matrix — pick the format to convert to.`
+                      : 'No ad.size found in the package — pick the format manually.'}
+                  </p>
+                )}
+              </>
+            )}
+            <p className="panel-note">Native source: {describeSizes(activeFormat.sizes)}</p>
+          </section>
+
+          <section className="mini-panel">
+            <h3>Target Platforms</h3>
+            {ALL_PLATFORMS.map((platform) => (
+              <PresetRow
+                key={platform}
+                checked={options.targetPlatforms.includes(platform)}
+                disabled={!supportsFormat(platform, options.formatKey)}
+                label={labelPlatform(platform)}
+                value={platformNote(platform, options)}
+                onChange={() => togglePlatform(platform)}
+                onSettings={() => setActiveDialog('settings')}
+              />
+            ))}
+            {sourceSize && options.targetPlatforms.some((platform) => !acceptsSize(platform, options.formatKey, sourceSize)) && (
+              <p className="panel-note warn">
+                {options.targetPlatforms
+                  .filter((platform) => !acceptsSize(platform, options.formatKey, sourceSize))
+                  .map((platform) => `${labelPlatform(platform)} expects ${describeSizes(acceptedSizes(platform, options.formatKey))}`)
+                  .join('; ')}
+                {` — this creative is ${sourceSize.width}x${sourceSize.height} and will not auto-scale.`}
+              </p>
+            )}
           </section>
 
           <button className="convert-button" onClick={runConversion} disabled={isConverting || isInspecting || options.targetPlatforms.length === 0}>
@@ -501,29 +541,13 @@ export function App() {
                   UMH auto click layer
                 </label>
                 <label>
-                  UMH format
-                  <select value={options.umhFormat} onChange={(event) => updateOptions({ ...options, umhFormat: event.target.value as UmhFormat })}>
-                    <option value="standard">Standard banner</option>
-                    <option value="fullscreen">Fullscreen</option>
-                    <option value="halfscreen">Halfscreen</option>
-                    <option value="catfish">CatFish</option>
-                  </select>
+                  Creative format
+                  <FormatSelect value={options.formatKey} onChange={selectFormat} />
                 </label>
-                <label>
-                  Fusify / AdPartner format
-                  <select value={options.fusifyFormat} onChange={(event) => updateOptions({ ...options, fusifyFormat: event.target.value as FusifyFormat })}>
-                    <option value="standard">Standard banner (index.html)</option>
-                    <option value="halfscreen">Halfscreen (body.html)</option>
-                  </select>
-                </label>
-                <label>
-                  Admixer format
-                  <select value={options.admixerMode} onChange={(event) => updateOptions({ ...options, admixerMode: event.target.value as AdmixerMode })}>
-                    <option value="fullscreen">Fullscreen</option>
-                    <option value="halfscreen">Mobile halfscreen</option>
-                    <option value="catfish">CatFish</option>
-                  </select>
-                </label>
+                <p>
+                  {activeFormat.label} is ordered by {platformsForFormat(options.formatKey).map(labelPlatform).join(', ')} and expects a{' '}
+                  {describeSizes(activeFormat.sizes)} DV360 source.
+                </p>
                 <p>Changing settings clears generated outputs so stale packages are not reused.</p>
               </div>
             ) : (
@@ -553,13 +577,30 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PresetRow({ checked, label, value, onChange, onSettings }: { checked: boolean; label: string; value: string; onChange: () => void; onSettings: () => void }) {
+function FormatSelect({ value, onChange }: { value: FormatKey; onChange: (formatKey: FormatKey) => void }) {
+  const fixed = FORMAT_MATRIX.filter((spec) => spec.kind === 'fixed');
+  const fluid = FORMAT_MATRIX.filter((spec) => spec.kind === 'fluid');
   return (
-    <div className="preset-row">
-      <input type="checkbox" checked={checked} onChange={onChange} aria-label={label} />
+    <select value={value} onChange={(event) => onChange(event.target.value as FormatKey)} aria-label="Creative format">
+      <optgroup label="Fixed sizes">
+        {fixed.map((spec) => <option key={spec.key} value={spec.key}>{spec.label}</option>)}
+      </optgroup>
+      <optgroup label="Fluid placements">
+        {fluid.map((spec) => (
+          <option key={spec.key} value={spec.key}>{`${spec.label} (${describeSizes(spec.sizes)})`}</option>
+        ))}
+      </optgroup>
+    </select>
+  );
+}
+
+function PresetRow({ checked, disabled, label, value, onChange, onSettings }: { checked: boolean; disabled?: boolean; label: string; value: string; onChange: () => void; onSettings: () => void }) {
+  return (
+    <div className={`preset-row ${disabled ? 'unavailable' : ''}`}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} aria-label={label} />
       <span>{label}</span>
       <small>{value}</small>
-      <button type="button" onClick={onSettings} aria-label={`${label} settings`}><Settings size={15} /></button>
+      <button type="button" onClick={onSettings} aria-label={`${label} settings`} disabled={disabled}><Settings size={15} /></button>
     </div>
   );
 }
@@ -622,8 +663,26 @@ function DownloadButton({ output, children, className, ariaLabel }: { output: Ou
 }
 
 function formatDimensions(metadata: CreativeMetadata | null): string {
-  if (!metadata?.width || !metadata.height) return '-';
-  return `${metadata.width} x ${metadata.height}`;
+  const size = creativeSize(metadata);
+  return size ? `${size.width} x ${size.height}` : '-';
+}
+
+function creativeSize(metadata: CreativeMetadata | null | undefined): Dimensions | undefined {
+  return metadata?.width && metadata.height ? { width: metadata.width, height: metadata.height } : undefined;
+}
+
+/** Підпис під платформою: чому вона недоступна або що вона отримає для цього формату. */
+function platformNote(platform: TargetPlatform, options: ConversionOptions): string {
+  if (!supportsFormat(platform, options.formatKey)) {
+    return 'not in matrix for this format';
+  }
+  if (platform === 'umh') {
+    return options.umhAutoButton ? 'auto click' : 'creative click';
+  }
+  if (platform === 'fusify') {
+    return options.formatKey === 'halfscreen' ? 'body.html + API' : 'flat index.html';
+  }
+  return 'API 2.0';
 }
 
 function formatBytes(bytes: number): string {

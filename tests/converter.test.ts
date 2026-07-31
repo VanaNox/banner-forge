@@ -5,11 +5,12 @@ import JSZip from 'jszip';
 import { convertDv360Banner, readSourceCreative, transformHtml } from '../src/lib/converter';
 import type { ConversionOptions } from '../src/lib/types';
 
-const dv360Html = `<!doctype html>
+function dv360HtmlFor(width: number, height: number) {
+  return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="ad.size" content="width=300,height=600">
+<meta name="ad.size" content="width=${width},height=${height}">
 <script type="text/javascript">var clickTag = "https://www.google.com";</script>
 </head>
 <body>
@@ -17,12 +18,13 @@ const dv360Html = `<!doctype html>
 <script>document.getElementById('banner').addEventListener('click', function () { window.open(window.clickTag); });</script>
 </body>
 </html>`;
+}
+
+const dv360Html = dv360HtmlFor(300, 600);
 
 const baseOptions: ConversionOptions = {
   landingUrl: 'https://example.com/landing',
-  admixerMode: 'fullscreen',
-  umhFormat: 'standard',
-  fusifyFormat: 'standard',
+  formatKey: '300x600',
   umhAutoButton: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
@@ -39,6 +41,16 @@ async function makeDv360Blob() {
 
 async function makeDv360File(fileName = 'Levia_DV360.zip') {
   return new File([await makeDv360Blob()], fileName, { type: 'application/zip' });
+}
+
+// Джерело нативного розміру для «пливких» форматів: назва архіву нейтральна, щоб
+// формат розпізнавався саме за розміром, а не за словом у назві.
+async function makeSizedDv360File(width: number, height: number, fileName = 'Levia_DV360.zip') {
+  const zip = new JSZip();
+  zip.file('index.html', dv360HtmlFor(width, height));
+  zip.file('images/frame 1.png', 'fake-image');
+  zip.file('scripts/creative.js', 'console.log("creative")');
+  return new File([await zip.generateAsync({ type: 'blob' })], fileName, { type: 'application/zip' });
 }
 
 // DV360 creative with a realistic large inline runtime + a DV360-preview viewport,
@@ -73,7 +85,47 @@ describe('readSourceCreative', () => {
     expect(source.metadata.basePath).toBe('banners/Sampling_01_300x600');
     expect(source.metadata.width).toBe(300);
     expect(source.metadata.height).toBe(600);
+    expect(source.metadata.sizeSource).toBe('ad.size meta');
+    expect(source.metadata.detectedFormat).toBe('300x600');
     expect(source.metadata.detectedClickTag).toBe(true);
+  });
+
+  it('maps every matrix size onto its format, including the 2x variants', async () => {
+    const detect = async (width: number, height: number) =>
+      (await readSourceCreative(await makeSizedDv360File(width, height))).metadata;
+
+    expect(await detect(336, 280)).toMatchObject({ detectedFormat: '336x280', detectedScale: 1 });
+    expect(await detect(492, 696)).toMatchObject({ detectedFormat: 'fullscreen', detectedScale: 1 });
+    expect(await detect(696, 492)).toMatchObject({ detectedFormat: 'fullscreen', detectedScale: 1 });
+    expect(await detect(800, 400)).toMatchObject({ detectedFormat: 'halfscreen', detectedScale: 1 });
+    expect(await detect(1600, 800)).toMatchObject({ detectedFormat: 'halfscreen', detectedScale: 2 });
+    expect(await detect(1920, 200)).toMatchObject({ detectedFormat: 'catfish', detectedScale: 1 });
+    expect(await detect(3840, 400)).toMatchObject({ detectedFormat: 'catfish', detectedScale: 2 });
+  });
+
+  it('leaves the format unrecognised for a size outside the matrix', async () => {
+    const source = await readSourceCreative(await makeSizedDv360File(970, 250));
+
+    expect(source.metadata.width).toBe(970);
+    expect(source.metadata.detectedFormat).toBeUndefined();
+  });
+
+  it('falls back to the size in the file name when the HTML carries none', async () => {
+    const zip = new JSZip();
+    zip.file('index.html', '<!doctype html><html><head></head><body><div id="b_1"></div></body></html>');
+    const file = new File([await zip.generateAsync({ type: 'blob' })], 'Sampling_01_800x400_Halfscreen.zip', { type: 'application/zip' });
+    const source = await readSourceCreative(file);
+
+    expect(source.metadata).toMatchObject({ width: 800, height: 400, sizeSource: 'file name', detectedFormat: 'halfscreen' });
+  });
+
+  it('reads the literal ad.size of an already converted package', async () => {
+    const zip = new JSZip();
+    zip.file('index.html', '<!doctype html><html><head><meta name="ad.size" content="catfish"></head><body></body></html>');
+    const file = new File([await zip.generateAsync({ type: 'blob' })], 'bonds_umh.zip', { type: 'application/zip' });
+    const source = await readSourceCreative(file);
+
+    expect(source.metadata.detectedFormat).toBe('catfish');
   });
 });
 
@@ -98,9 +150,9 @@ describe('transformHtml for UMH', () => {
   });
 
   it('uses the literal fullscreen/halfscreen/catfish ad.size for UMH special formats', () => {
-    const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'fullscreen' });
-    const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'halfscreen' });
-    const catfish = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'catfish' });
+    const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'fullscreen' });
+    const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'halfscreen' });
+    const catfish = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'catfish' });
 
     expect(fullscreen).toContain('meta name="ad.size" content="fullscreen"');
     expect(halfscreen).toContain('meta name="ad.size" content="halfscreen"');
@@ -108,7 +160,7 @@ describe('transformHtml for UMH', () => {
   });
 
   it('carries a pixel height in ad.vars for the UMH catfish strip', () => {
-    const html = transformHtml(dv360Html, 'umh', { ...baseOptions, umhFormat: 'catfish' });
+    const html = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'catfish' });
 
     expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
   });
@@ -165,7 +217,7 @@ describe('transformHtml for Fusify/AdPartner', () => {
   });
 
   it('builds the halfscreen format around body.html conventions', () => {
-    const html = transformHtml(dv360Html, 'fusify', { ...baseOptions, fusifyFormat: 'halfscreen' });
+    const html = transformHtml(dv360Html, 'fusify', { ...baseOptions, formatKey: 'halfscreen' });
 
     expect(html).toContain('//a4p.adpartner.pro/adpartner-iframe.min.js');
     expect(html).toContain('onclick="return adPartner.click();"');
@@ -182,7 +234,7 @@ describe('transformHtml for Fusify/AdPartner', () => {
 
 describe('transformHtml for Admixer', () => {
   it('creates body.html content with API close and click hooks', () => {
-    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, admixerMode: 'halfscreen' });
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'halfscreen' });
 
     expect(html).toContain('id="admixer-click-area"');
     expect(html).toContain('id="close"');
@@ -191,14 +243,14 @@ describe('transformHtml for Admixer', () => {
   });
 
   it('places the CatFish close button in the upper right corner with a 5px margin', () => {
-    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, admixerMode: 'catfish' });
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'catfish' });
 
     expect(html).toContain('class="ad-close-button"');
     expect(html).toContain('right:5px;top:5px');
   });
 
   it('routes clicks through globalHTML5Api instead of window.open', () => {
-    const html = transformHtml(dv360Html, 'admixer', baseOptions);
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'fullscreen' });
 
     // window.open(clickTag) відкривав би undefined і обходив трекінг Admixer.
     expect(html).not.toContain('window.open(window.clickTag');
@@ -211,45 +263,72 @@ describe('transformHtml for Admixer', () => {
 });
 
 describe('convertDv360Banner', () => {
-  it('builds three target packages and one download bundle with platform naming', async () => {
-    const result = await convertDv360Banner(await makeDv360File(), {
-      landingUrl: 'https://example.com/landing',
-      admixerMode: 'halfscreen'
+  it('builds the three halfscreen packages from the size alone, with no format passed in', async () => {
+    // 800x400 — рядок матриці halfscreen для всіх трьох платформ. Формат не передаємо:
+    // конвертер має взяти його з розміру банера.
+    const result = await convertDv360Banner(await makeSizedDv360File(800, 400), {
+      landingUrl: 'https://example.com/landing'
     });
 
     expect(result.packages.map((pkg) => pkg.platform)).toEqual(['umh', 'fusify', 'admixer', 'bundle']);
     expect(result.packages.map((pkg) => pkg.fileName)).toEqual([
-      'banner_300x600@Levia_DV360.zip',
-      '300x600_Levia_DV360_adpartner.zip',
+      'banner_halfscreen@Levia_DV360.zip',
+      'halfscreen_Levia_DV360_adpartner.zip',
       'halfscreen_Levia_DV360_admixer.zip',
       'Levia_DV360_converted_bundle.zip'
     ]);
     expect(result.packages.every((pkg) => pkg.sizeBytes > 0)).toBe(true);
     expect(result.packages.filter((pkg) => pkg.platform !== 'bundle').every((pkg) => pkg.validation.every((check) => check.passed))).toBe(true);
+    // Джерело нативного розміру — жодних попереджень про невідповідність матриці.
+    expect(result.warnings.filter((warning) => /delivery matrix|expects a/.test(warning))).toEqual([]);
   });
 
   it('names UMH fullscreen archives with the literal format token', async () => {
-    const result = await convertDv360Banner(await makeDv360File(), {
+    const result = await convertDv360Banner(await makeSizedDv360File(492, 696), {
       landingUrl: 'https://example.com/landing',
-      umhFormat: 'fullscreen',
       targetPlatforms: ['umh']
     });
 
     expect(result.packages[0].fileName).toBe('banner_fullscreen@Levia_DV360.zip');
   });
 
+  it('refuses to guess when the size is outside the delivery matrix', async () => {
+    await expect(
+      convertDv360Banner(await makeSizedDv360File(970, 250), { landingUrl: 'https://example.com/landing' })
+    ).rejects.toThrow(/970x250 is not in the delivery matrix/);
+  });
+
+  it('warns when a platform does not order the format, or the source is the wrong native size', async () => {
+    const offMatrix = await convertDv360Banner(await makeSizedDv360File(800, 400), {
+      landingUrl: 'https://example.com/landing',
+      formatKey: 'catfish',
+      targetPlatforms: ['fusify']
+    });
+    expect(offMatrix.warnings).toContain('Fusify/AdPartner Catfish is not in the delivery matrix — this combination is not ordered for this platform.');
+
+    // 1600x800 — прийнятний 2x halfscreen тільько для UMH; AdPartner чекає 800x400.
+    const wrongSize = await convertDv360Banner(await makeSizedDv360File(1600, 800), {
+      landingUrl: 'https://example.com/landing',
+      targetPlatforms: ['umh', 'fusify']
+    });
+    expect(wrongSize.warnings).toContain('Fusify/AdPartner Halfscreen expects a 800x400 source; this creative is 1600x800.');
+    expect(wrongSize.warnings.filter((warning) => warning.startsWith('UMH Halfscreen expects'))).toEqual([]);
+  });
+
   it('writes platform-specific zip entrypoints and removes macOS metadata', async () => {
     const result = await convertDv360Banner(await makeDv360Blob(), {
       landingUrl: 'https://example.com/landing',
-      admixerMode: 'halfscreen'
+      formatKey: 'halfscreen'
     });
 
     const umhZip = await JSZip.loadAsync(result.packages.find((pkg) => pkg.platform === 'umh')!.blob);
     const fusifyZip = await JSZip.loadAsync(result.packages.find((pkg) => pkg.platform === 'fusify')!.blob);
     const admixerZip = await JSZip.loadAsync(result.packages.find((pkg) => pkg.platform === 'admixer')!.blob);
 
+    // Halfscreen: UMH лишається на index.html, AdPartner і Admixer — на body.html.
     expect(umhZip.file('index.html')).toBeTruthy();
-    expect(fusifyZip.file('index.html')).toBeTruthy();
+    expect(fusifyZip.file('body.html')).toBeTruthy();
+    expect(fusifyZip.file('index.html')).toBeNull();
     expect(fusifyZip.file('frame1.png')).toBeTruthy();
     expect(fusifyZip.file('images/frame 1.png')).toBeNull();
     expect(admixerZip.file('body.html')).toBeTruthy();
@@ -272,7 +351,7 @@ describe('convertDv360Banner', () => {
   it('builds a bottom-anchored fixed-height body.js for the Admixer CatFish format', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',
-      admixerMode: 'catfish',
+      formatKey: 'catfish',
       targetPlatforms: ['admixer']
     });
 
@@ -289,7 +368,7 @@ describe('convertDv360Banner', () => {
   it('emits body.html for the AdPartner halfscreen format', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',
-      fusifyFormat: 'halfscreen',
+      formatKey: 'halfscreen',
       targetPlatforms: ['fusify']
     });
 
@@ -311,7 +390,7 @@ describe('convertDv360Banner', () => {
   it('builds a UMH catfish package with the catfish token and metadata', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',
-      umhFormat: 'catfish',
+      formatKey: 'catfish',
       targetPlatforms: ['umh']
     });
 
@@ -327,7 +406,7 @@ describe('convertDv360Banner', () => {
   it('externalizes the UMH runtime into a format-named .js file at the root', async () => {
     const half = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      umhFormat: 'halfscreen',
+      formatKey: 'halfscreen',
       targetPlatforms: ['umh']
     });
     const halfZip = await JSZip.loadAsync(half.packages[0].blob);
@@ -342,7 +421,7 @@ describe('convertDv360Banner', () => {
     // Стандартний формат — за розміром креативу.
     const std = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      umhFormat: 'standard',
+      formatKey: '300x250',
       targetPlatforms: ['umh']
     });
     const stdZip = await JSZip.loadAsync(std.packages[0].blob);
@@ -353,7 +432,7 @@ describe('convertDv360Banner', () => {
   it('externalizes the AdPartner creative runtime into a size-named .js file', async () => {
     const result = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      fusifyFormat: 'standard',
+      formatKey: '300x250',
       targetPlatforms: ['fusify']
     });
 
@@ -375,7 +454,7 @@ describe('convertDv360Banner', () => {
   it('externalizes the runtime for the AdPartner halfscreen format too', async () => {
     const result = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      fusifyFormat: 'halfscreen',
+      formatKey: 'halfscreen',
       targetPlatforms: ['fusify']
     });
 
@@ -394,7 +473,7 @@ describe('convertDv360Banner', () => {
   it('externalizes the Admixer creative runtime into js/<mode>.js next to js/body.js', async () => {
     const full = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      admixerMode: 'fullscreen',
+      formatKey: 'fullscreen',
       targetPlatforms: ['admixer']
     });
     const fullZip = await JSZip.loadAsync(full.packages[0].blob);
@@ -409,7 +488,7 @@ describe('convertDv360Banner', () => {
 
     const half = await convertDv360Banner(await makeBigDv360File(), {
       landingUrl: 'https://example.com/landing',
-      admixerMode: 'halfscreen',
+      formatKey: 'halfscreen',
       targetPlatforms: ['admixer']
     });
     const halfZip = await JSZip.loadAsync(half.packages[0].blob);
@@ -420,7 +499,7 @@ describe('convertDv360Banner', () => {
   it('returns the platform archive itself as the download when one platform is selected', async () => {
     const result = await convertDv360Banner(await makeDv360File(), {
       landingUrl: 'https://example.com/landing',
-      fusifyFormat: 'standard',
+      formatKey: '300x600',
       targetPlatforms: ['fusify']
     });
 
@@ -449,15 +528,14 @@ describe('convertDv360Banner', () => {
   });
 
   it('only builds selected target platforms', async () => {
-    const result = await convertDv360Banner(await makeDv360File(), {
+    const result = await convertDv360Banner(await makeSizedDv360File(696, 492), {
       landingUrl: 'https://example.com/landing',
-      admixerMode: 'fullscreen',
       targetPlatforms: ['umh', 'admixer']
     });
 
     expect(result.packages.map((pkg) => pkg.platform)).toEqual(['umh', 'admixer', 'bundle']);
     expect(result.packages.map((pkg) => pkg.fileName)).toEqual([
-      'banner_300x600@Levia_DV360.zip',
+      'banner_fullscreen@Levia_DV360.zip',
       'fullscreen_Levia_DV360_admixer.zip',
       'Levia_DV360_converted_bundle.zip'
     ]);

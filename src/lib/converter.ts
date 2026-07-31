@@ -1,12 +1,21 @@
 import JSZip from 'jszip';
 import { ADMIXER_HARNESS_FILES, ADMIXER_HARNESS_FOLDERS } from './admixerHarness';
-import type { AdmixerMode, ConversionOptions, ConversionResult, CreativeMetadata, OutputPackage, TargetPlatform, UmhFormat, ValidationCheck } from './types';
+import {
+  acceptedSizes,
+  acceptsSize,
+  describeSizes,
+  detectFormat,
+  detectFormatFromName,
+  fixedFormatDimensions,
+  formatSpec,
+  isFixedFormat,
+  supportsFormat,
+  type Dimensions
+} from './formatMatrix';
+import type { ConversionOptions, ConversionResult, CreativeMetadata, FormatKey, OutputPackage, SizeSource, TargetPlatform, ValidationCheck } from './types';
 
-const DEFAULT_OPTIONS: ConversionOptions = {
+const DEFAULT_OPTIONS: Omit<ConversionOptions, 'formatKey'> = {
   landingUrl: 'https://www.google.com',
-  admixerMode: 'fullscreen',
-  umhFormat: 'standard',
-  fusifyFormat: 'standard',
   umhAutoButton: true,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
@@ -74,8 +83,20 @@ interface SourceCreative {
 }
 
 export async function convertDv360Banner(file: File | Blob, options?: Partial<ConversionOptions>): Promise<ConversionResult> {
-  const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
   const source = await readSourceCreative(file);
+  // Формат беремо з банера, якщо викликач його не зафіксував — саме це дає
+  // «завантажив і нічого не натискав». Якщо не розпізнали і не передали — падаємо,
+  // бо тихо зібрати пакет не того формату гірше, ніж не зібрати нічого.
+  const formatKey = options?.formatKey ?? source.metadata.detectedFormat;
+  if (!formatKey) {
+    throw new Error(
+      `Could not recognise the creative format of ${source.metadata.sourceFileName}` +
+      `${source.metadata.width && source.metadata.height ? ` (${source.metadata.width}x${source.metadata.height} is not in the delivery matrix)` : ' (no ad.size found)'}. ` +
+      'Pick the format manually before converting.'
+    );
+  }
+
+  const mergedOptions: ConversionOptions = { ...DEFAULT_OPTIONS, ...options, formatKey };
   const targetPlatforms = mergedOptions.targetPlatforms.length > 0 ? mergedOptions.targetPlatforms : DEFAULT_OPTIONS.targetPlatforms;
 
   const outputs = await Promise.all(
@@ -119,11 +140,13 @@ export async function readSourceCreative(file: File | Blob): Promise<SourceCreat
     .map((entry) => normalizePath(entry.name))
     .filter((path) => basePath === '' || path === entryPath || path.startsWith(`${basePath}/`));
 
+  const sourceFileName = getSourceFileName(file);
+
   const metadata: CreativeMetadata = {
     entryPath,
     basePath,
-    sourceFileName: getSourceFileName(file),
-    ...extractAdSize(entryHtml),
+    sourceFileName,
+    ...detectCreativeFormat(entryHtml, [sourceFileName, entryPath]),
     title: extractTitle(entryHtml),
     assetCount: rootFiles.length,
     sourceSizeBytes: file.size,
@@ -133,11 +156,44 @@ export async function readSourceCreative(file: File | Blob): Promise<SourceCreat
   return { zip, metadata, entryHtml, rootFiles };
 }
 
+type DetectedFormat = Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource' | 'detectedFormat' | 'detectedScale'>;
+
+/**
+ * Визначає, що саме завантажив користувач: спершу піксельний розмір (meta ad.size →
+ * CSS контейнера → розмір у назві файлу), потім зіставлення з матрицею. Якщо розміру
+ * немає, останній шанс — літеральний ad.size вже сконвертованого пакета або назва
+ * архіву на кшталт `..._Halfscreen.zip`.
+ */
+function detectCreativeFormat(entryHtml: string, names: string[]): DetectedFormat {
+  const size = detectCreativeSize(entryHtml, names);
+  const bySize = detectFormat(size.width, size.height);
+  if (bySize) {
+    return { ...size, detectedFormat: bySize.format.key, detectedScale: bySize.size.scale };
+  }
+
+  const literal = entryHtml.match(/<meta\s+name=["']ad\.size["']\s+content=["'](fullscreen|halfscreen|catfish)["']/i);
+  const byName = literal ? formatSpec(literal[1].toLowerCase() as FormatKey) : names.map(detectFormatFromName).find(Boolean);
+  return byName ? { ...size, detectedFormat: byName.key } : size;
+}
+
+function detectCreativeSize(entryHtml: string, names: string[]): Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource'> {
+  const fromHtml = extractAdSizeWithSource(entryHtml);
+  if (fromHtml.width && fromHtml.height) return fromHtml;
+
+  for (const name of names) {
+    const match = name.match(/(?:^|[^\d])(\d{2,4})\s*[xX*]\s*(\d{2,4})(?:[^\d]|$)/);
+    if (match) {
+      return { width: Number(match[1]), height: Number(match[2]), sizeSource: 'file name' };
+    }
+  }
+
+  return fromHtml;
+}
+
 async function buildPlatformPackage(source: SourceCreative, platform: TargetPlatform, options: ConversionOptions): Promise<OutputPackage> {
   const out = new JSZip();
   const warnings: string[] = [];
-  const entryName = platform === 'admixer' || (platform === 'fusify' && options.fusifyFormat === 'halfscreen') ? 'body.html' : 'index.html';
-  const mode = platform === 'admixer' ? options.admixerMode : undefined;
+  const entryName = platform === 'admixer' || (platform === 'fusify' && options.formatKey === 'halfscreen') ? 'body.html' : 'index.html';
   const assetPlan = buildAssetPlan(source, platform);
   const transformedHtml = transformHtmlWithAssets(source.entryHtml, platform, options, assetPlan.pathMap);
   const validation: ValidationCheck[] = [];
@@ -167,14 +223,14 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
   out.file(entryName, entryHtml);
 
   if (platform === 'admixer') {
-    out.file('js/body.js', buildAdmixerBodyJs(mode ?? 'fullscreen', source.metadata.height));
+    out.file('js/body.js', buildAdmixerBodyJs(options.formatKey, source.metadata.height));
     // Тестовий стенд index/ входить в обидва робочі еталони — без нього
     // превʼю-тул Admixer не може зібрати Settings для креативу.
     ADMIXER_HARNESS_FILES.forEach((file) => out.file(file.path, file.content));
     ADMIXER_HARNESS_FOLDERS.forEach((folder) => out.folder(folder));
   }
 
-  const emitsHalfscreenCss = platform === 'fusify' && options.fusifyFormat === 'halfscreen';
+  const emitsHalfscreenCss = platform === 'fusify' && options.formatKey === 'halfscreen';
   if (emitsHalfscreenCss) {
     // Паритет з еталоном: робочий adpartner-halfscreen пакет містить цей файл.
     out.file(FUSIFY_HALFSCREEN_CSS_FILE, FUSIFY_HALFSCREEN_CSS);
@@ -190,6 +246,10 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
   ];
   validation.push(...validatePlatformPackage(platform, outputEntries, entryHtml, blob.size, entryName, options));
   validation.filter((check) => !check.passed).forEach((check) => warnings.push(`${labelPlatform(platform)}: ${check.label}`));
+
+  // Матриця постачання — це політика замовлення, а не дефект пакета, тож розбіжності
+  // йдуть у warnings: UI не дає їх обрати, а програмний виклик про них дізнається.
+  warnings.push(...matrixWarnings(source.metadata, platform, options));
 
   const sizeLimit = platformSizeLimit(platform);
   if (blob.size > sizeLimit) {
@@ -260,7 +320,7 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
       : upsertClickTag(cleaned, landingUrl);
     return addHeadMeta(clickReady, [
       ['ad.type', 'banner'],
-      ['ad.size', umhAdSizeContent(html, options.umhFormat)],
+      ['ad.size', umhAdSizeContent(html, options.formatKey)],
       ['ad.vars', umhAdVars(html, options)]
     ]);
   }
@@ -270,22 +330,22 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
     // AdPartner-еталонах його немає, тож прибираємо (для halfscreen далі
     // додається чистий width=device-width viewport).
     const cleaned = removeDv360PreviewViewport(normalized);
-    if (options.fusifyFormat === 'halfscreen') {
-      return buildFusifyHalfscreenHtml(cleaned, html);
+    if (options.formatKey === 'halfscreen') {
+      return buildFusifyHalfscreenHtml(cleaned, html, options.formatKey);
     }
     // Стандартні розміри AdPartner приймає як звичайний креатив без власного API.
     return upsertClickTag(cleaned, landingUrl);
   }
 
-  return buildAdmixerHtml(normalized, options.admixerMode);
+  return buildAdmixerHtml(normalized, options.formatKey);
 }
 
-function buildFusifyHalfscreenHtml(html: string, originalHtml: string): string {
+function buildFusifyHalfscreenHtml(html: string, originalHtml: string, formatKey: FormatKey): string {
   const neutralized = removeClickTagDeclaration(neutralizeDirectClicks(html));
   const withScript = ensureHeadScript(ensureViewportMeta(neutralized), ADPARTNER_IFRAME_SRC);
   const withCss = ensureHeadStylesheet(withScript, FUSIFY_HALFSCREEN_CSS_FILE);
   const withMeta = addHeadMeta(withCss, [
-    ['ad.size', adSizeContent(originalHtml)]
+    ['ad.size', adSizeContent(originalHtml, formatKey)]
   ]);
   const { width, height } = extractAdSize(originalHtml);
   const bodyInner = extractBodyInner(withMeta);
@@ -303,7 +363,7 @@ ${bodyInner}
   return replaceBodyInner(withMeta, wrapped);
 }
 
-function buildAdmixerHtml(html: string, mode: AdmixerMode): string {
+function buildAdmixerHtml(html: string, mode: FormatKey): string {
   // Кліки має рахувати globalHTML5Api.click() з js/body.js — прямий window.open
   // обходить трекінг Admixer, а clickTag у head платформа не передає.
   const neutralized = neutralizeDirectClicks(html);
@@ -333,11 +393,11 @@ ${bodyInner}
 </html>`;
 }
 
-function buildAdmixerBodyJs(mode: AdmixerMode, creativeHeight?: number): string {
+function buildAdmixerBodyJs(mode: FormatKey, creativeHeight?: number): string {
   const vertical = mode === 'fullscreen' ? 'center' : 'bottom';
   const width = '100%';
   // CatFish кріпиться знизу з фіксованою піксельною висотою креативу (еталон: 200px),
-  // доки обмежують висоту 30% екрана.
+  // доки обмежують висоту 30% екрана. Фіксовані розміри поводяться як CatFish.
   const height = mode === 'fullscreen' ? '100%' : mode === 'halfscreen' ? '30%' : `${creativeHeight || 200}px`;
   return `globalHTML5Api.on('load', function () {
   function prevent(event) {
@@ -444,14 +504,19 @@ function findCreativeEntry(htmlByPath: TextMap): string {
 }
 
 function extractAdSize(html: string): Pick<CreativeMetadata, 'width' | 'height'> {
+  const { width, height } = extractAdSizeWithSource(html);
+  return { width, height };
+}
+
+function extractAdSizeWithSource(html: string): Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource'> {
   const meta = html.match(/<meta\s+name=["']ad\.size["']\s+content=["']width=(\d+),height=(\d+)["']/i);
   if (meta) {
-    return { width: Number(meta[1]), height: Number(meta[2]) };
+    return { width: Number(meta[1]), height: Number(meta[2]), sizeSource: 'ad.size meta' };
   }
 
   const container = html.match(/width:\s*(\d+)px[\s\S]{0,80}height:\s*(\d+)px/i);
   if (container) {
-    return { width: Number(container[1]), height: Number(container[2]) };
+    return { width: Number(container[1]), height: Number(container[2]), sizeSource: 'container CSS' };
   }
 
   return {};
@@ -522,9 +587,9 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
   ];
 
   if (platform === 'umh') {
-    const adSizePattern = options.umhFormat === 'standard'
+    const adSizePattern = isFixedFormat(options.formatKey)
       ? /<meta\s+name=["']ad\.size["']\s+content=["']width=\d+,height=\d+["']/i
-      : new RegExp(`<meta\\s+name=["']ad\\.size["']\\s+content=["']${options.umhFormat}["']`, 'i');
+      : new RegExp(`<meta\\s+name=["']ad\\.size["']\\s+content=["']${options.formatKey}["']`, 'i');
     checks.push(
       { label: 'UMH required ad.type/ad.size/ad.vars metadata is present', passed: /<meta\s+name=["']ad\.type["'][^>]+content=["']banner["']/i.test(html) && adSizePattern.test(html) && /<meta\s+name=["']ad\.vars["']/i.test(html) },
       { label: 'UMH file names contain no spaces or non-latin characters', passed: entries.every(hasPlatformSafeName) },
@@ -534,7 +599,7 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
 
   if (platform === 'fusify') {
     checks.push({ label: 'Fusify/AdPartner archive has no folders', passed: entries.every((entry) => !entry.includes('/')) });
-    if (options.fusifyFormat === 'halfscreen') {
+    if (options.formatKey === 'halfscreen') {
       checks.push({ label: 'AdPartner iframe bridge is connected', passed: /a4p\.adpartner\.pro\/adpartner-iframe\.min\.js/i.test(html) });
     } else {
       checks.push({ label: 'Standard AdPartner creative carries no halfscreen API', passed: !/a4p\.adpartner\.pro|adPartner\.click/i.test(html) });
@@ -553,37 +618,60 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
   return checks;
 }
 
-function adSizeContent(html: string): string {
-  const { width, height } = extractAdSize(html);
-  return width && height ? `width=${width},height=${height}` : 'width=300,height=600';
+/**
+ * Розмір, який пакет має заявляти. Якщо з банера він не вичитався, беремо розмір
+ * самого фіксованого формату — інакше невдале розпізнавання тихо підписало б пакет
+ * чужим розміром.
+ */
+function outputDimensions(size: Partial<Dimensions>, formatKey: FormatKey): Dimensions | undefined {
+  if (size.width && size.height) return { width: size.width, height: size.height };
+  return fixedFormatDimensions(formatKey);
+}
+
+function adSizeContent(html: string, formatKey: FormatKey): string {
+  const size = outputDimensions(extractAdSize(html), formatKey);
+  return size ? `width=${size.width},height=${size.height}` : 'width=300,height=600';
+}
+
+/** Формат поза матрицею або джерело не того нативного розміру — попереджаємо явно. */
+function matrixWarnings(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string[] {
+  const label = `${labelPlatform(platform)} ${formatSpec(options.formatKey).label}`;
+  if (!supportsFormat(platform, options.formatKey)) {
+    return [`${label} is not in the delivery matrix — this combination is not ordered for this platform.`];
+  }
+
+  const size = metadata.width && metadata.height ? { width: metadata.width, height: metadata.height } : undefined;
+  if (!size) {
+    return [`${label}: could not read the creative size, so it was not checked against the format's native size.`];
+  }
+  if (!acceptsSize(platform, options.formatKey, size)) {
+    const expected = describeSizes(acceptedSizes(platform, options.formatKey));
+    return [`${label} expects a ${expected} source; this creative is ${size.width}x${size.height}.`];
+  }
+  return [];
 }
 
 function fixedSizeScalingNote(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string | undefined {
-  const stretchFormat = platform === 'admixer'
-    ? `Admixer ${options.admixerMode}`
-    : platform === 'umh' && options.umhFormat !== 'standard'
-      ? `UMH ${options.umhFormat}`
-      : platform === 'fusify' && options.fusifyFormat === 'halfscreen'
-        ? 'AdPartner halfscreen'
-        : undefined;
-
-  if (!stretchFormat || !metadata.width || !metadata.height) {
+  // Фіксовані розміри AdPartner приймає як є — попередження стосується лише
+  // «пливких» плейсментів, які платформа розтягує.
+  if (isFixedFormat(options.formatKey) || !metadata.width || !metadata.height) {
     return undefined;
   }
+  const stretchFormat = `${labelPlatform(platform)} ${options.formatKey}`;
   return `${stretchFormat}: the DV360 creative is fixed at ${metadata.width}x${metadata.height}px and will not auto-scale to fill the placement. Review the preview before trafficking.`;
 }
 
-function umhAdSizeContent(html: string, format: UmhFormat): string {
+function umhAdSizeContent(html: string, formatKey: FormatKey): string {
   // Для fullscreen/halfscreen/catfish UMH чекає літеральне значення, а не width/height.
-  if (format === 'fullscreen' || format === 'halfscreen' || format === 'catfish') {
-    return format;
+  if (!isFixedFormat(formatKey)) {
+    return formatKey;
   }
-  return adSizeContent(html);
+  return adSizeContent(html, formatKey);
 }
 
 function umhAdVars(html: string, options: ConversionOptions): string {
   const autoButton = options.umhAutoButton ? '1' : '0';
-  if (options.umhFormat === 'catfish') {
+  if (options.formatKey === 'catfish') {
     // CatFish на UMH — прилипла до низу смуга: ad.vars несе піксельну висоту показу.
     return `height=${umhCatfishHeight(html)},auto_button=${autoButton}`;
   }
@@ -607,29 +695,30 @@ function removeDv360PreviewViewport(html: string): string {
   );
 }
 
-function creativeSizeToken(metadata: CreativeMetadata): string {
-  return metadata.width && metadata.height ? `${metadata.width}x${metadata.height}` : 'creative';
+function creativeSizeToken(metadata: CreativeMetadata, formatKey: FormatKey): string {
+  const size = outputDimensions(metadata, formatKey);
+  return size ? `${size.width}x${size.height}` : 'creative';
 }
 
 function runtimeJsFileName(platform: TargetPlatform, options: ConversionOptions, metadata: CreativeMetadata): string {
   // UMH-еталони називають JS за форматом (Halfscreen.js / fullscreen.js / CatFish.js);
   // стандарт і AdPartner — за розміром креативу (<width>x<height>.js), як у їхніх еталонах.
   if (platform === 'umh') {
-    if (options.umhFormat === 'fullscreen') return 'fullscreen.js';
-    if (options.umhFormat === 'halfscreen') return 'Halfscreen.js';
-    if (options.umhFormat === 'catfish') return 'CatFish.js';
+    if (options.formatKey === 'fullscreen') return 'fullscreen.js';
+    if (options.formatKey === 'halfscreen') return 'Halfscreen.js';
+    if (options.formatKey === 'catfish') return 'CatFish.js';
   }
   // Admixer-еталони тримають анімацію в js/<name>.js поруч із js/body.js.
   if (platform === 'admixer') {
-    if (options.admixerMode === 'halfscreen') return 'js/half.js';
-    if (options.admixerMode === 'catfish') return 'js/catfish.js';
+    if (options.formatKey === 'halfscreen') return 'js/half.js';
+    if (options.formatKey === 'catfish') return 'js/catfish.js';
     return 'js/fullscreen.js';
   }
   // AdPartner halfscreen-еталон називає JS за форматом (Halfscreen.js), а не за розміром.
-  if (platform === 'fusify' && options.fusifyFormat === 'halfscreen') {
+  if (platform === 'fusify' && options.formatKey === 'halfscreen') {
     return 'Halfscreen.js';
   }
-  return `${creativeSizeToken(metadata)}.js`;
+  return `${creativeSizeToken(metadata, options.formatKey)}.js`;
 }
 
 // Виносить найбільший inline-<script> (рантайм анімації Bannerify) в окремий файл,
@@ -785,17 +874,18 @@ function sourceBaseName(fileName: string): string {
 
 function buildOutputFileName(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string {
   const base = sourceBaseName(metadata.sourceFileName);
-  const size = metadata.width && metadata.height ? `${metadata.width}x${metadata.height}` : '300x600';
+  const size = outputDimensions(metadata, options.formatKey);
+  const sizeToken = size ? `${size.width}x${size.height}` : '300x600';
 
   if (platform === 'umh') {
     // Вимога UMH до імені архіву: banner_<size>@<name>.zip
-    const token = options.umhFormat === 'standard' ? size : options.umhFormat;
+    const token = isFixedFormat(options.formatKey) ? sizeToken : options.formatKey;
     return `banner_${token}@${base}.zip`;
   }
   if (platform === 'fusify') {
-    return options.fusifyFormat === 'halfscreen' ? `halfscreen_${base}_adpartner.zip` : `${size}_${base}_adpartner.zip`;
+    return options.formatKey === 'halfscreen' ? `halfscreen_${base}_adpartner.zip` : `${sizeToken}_${base}_adpartner.zip`;
   }
-  return `${options.admixerMode}_${base}_admixer.zip`;
+  return `${options.formatKey}_${base}_admixer.zip`;
 }
 
 function safeFilePart(value: string): string {
@@ -809,7 +899,7 @@ function hasPlatformClickHook(html: string, platform: TargetPlatform, options: C
     return options.umhAutoButton || /clickTag/i.test(html);
   }
   if (platform === 'fusify') {
-    return options.fusifyFormat === 'halfscreen' ? /adPartner\.click/i.test(html) : true;
+    return options.formatKey === 'halfscreen' ? /adPartner\.click/i.test(html) : true;
   }
   return /globalHTML5Api\.click|admixer-click-area/i.test(html);
 }

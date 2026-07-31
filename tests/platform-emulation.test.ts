@@ -3,7 +3,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertDv360Banner } from '../src/lib/converter';
-import type { AdmixerMode, ConversionOptions, FusifyFormat, UmhFormat } from '../src/lib/types';
+import { isFixedFormat } from '../src/lib/formatMatrix';
+import type { ConversionOptions, FormatKey } from '../src/lib/types';
 
 const SRC = path.resolve(__dirname, "../scratch/emul/src");
 
@@ -23,52 +24,52 @@ const cases: Case[] = [
   ...FIXED.flatMap((size): Case[] => [
     {
       src: `Sampling_02_${size}.zip`, label: `adp-standard ${size}`,
-      opts: { targetPlatforms: ['fusify'], fusifyFormat: 'standard' },
+      opts: { targetPlatforms: ['fusify'], formatKey: size as FormatKey },
       expectEntry: 'index.html', expectJs: `${size}.js`
     },
     {
       src: `Sampling_02_${size}.zip`, label: `umh-standard ${size}`,
-      opts: { targetPlatforms: ['umh'], umhFormat: 'standard' },
+      opts: { targetPlatforms: ['umh'], formatKey: size as FormatKey },
       expectEntry: 'index.html', expectJs: `${size}.js`
     }
   ]),
   // ---- fluid sources at their native size
   {
     src: 'Sampling_01_320x480_Fullscreen.zip', label: 'umh-fullscreen 320x480',
-    opts: { targetPlatforms: ['umh'], umhFormat: 'fullscreen' },
+    opts: { targetPlatforms: ['umh'], formatKey: 'fullscreen' },
     expectEntry: 'index.html', expectJs: 'fullscreen.js'
   },
   {
     src: 'Sampling_01_320x480_Fullscreen.zip', label: 'admx-fullscreen 320x480',
-    opts: { targetPlatforms: ['admixer'], admixerMode: 'fullscreen' },
+    opts: { targetPlatforms: ['admixer'], formatKey: 'fullscreen' },
     expectEntry: 'body.html', expectJs: 'js/fullscreen.js',
     expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
   },
   {
     src: 'Sampling_01_800x400_Halfscreen.zip', label: 'adp-halfscreen 800x400',
-    opts: { targetPlatforms: ['fusify'], fusifyFormat: 'halfscreen' },
+    opts: { targetPlatforms: ['fusify'], formatKey: 'halfscreen' },
     expectEntry: 'body.html', expectJs: 'Halfscreen.js',
     expectExtra: ['for_halfscreen_style.css']
   },
   {
     src: 'Sampling_01_800x400_Halfscreen.zip', label: 'umh-halfscreen 800x400',
-    opts: { targetPlatforms: ['umh'], umhFormat: 'halfscreen' },
+    opts: { targetPlatforms: ['umh'], formatKey: 'halfscreen' },
     expectEntry: 'index.html', expectJs: 'Halfscreen.js'
   },
   {
     src: 'Sampling_01_800x400_Halfscreen.zip', label: 'admx-halfscreen 800x400',
-    opts: { targetPlatforms: ['admixer'], admixerMode: 'halfscreen' },
+    opts: { targetPlatforms: ['admixer'], formatKey: 'halfscreen' },
     expectEntry: 'body.html', expectJs: 'js/half.js',
     expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
   },
   {
     src: 'Sampling_01_1920x200_Catfish.zip', label: 'umh-catfish 1920x200',
-    opts: { targetPlatforms: ['umh'], umhFormat: 'catfish' },
+    opts: { targetPlatforms: ['umh'], formatKey: 'catfish' },
     expectEntry: 'index.html', expectJs: 'CatFish.js'
   },
   {
     src: 'Sampling_01_1920x200_Catfish.zip', label: 'admx-catfish 1920x200',
-    opts: { targetPlatforms: ['admixer'], admixerMode: 'catfish' },
+    opts: { targetPlatforms: ['admixer'], formatKey: 'catfish' },
     expectEntry: 'body.html', expectJs: 'js/catfish.js',
     expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
   }
@@ -147,12 +148,12 @@ it.skipIf(!existsSync(SRC))('emulates DV360 -> 3 platforms for every real source
     if (pkg.platform === 'umh') {
       if (!/name="ad\.type" content="banner"/.test(html)) problems.push('no ad.type');
       if (!/name="ad\.vars"/.test(html)) problems.push('no ad.vars');
-      const fmt = (c.opts.umhFormat ?? 'standard') as UmhFormat;
-      const wantSize = fmt === 'standard' ? /name="ad\.size" content="width=\d+,height=\d+"/ : new RegExp(`name="ad\\.size" content="${fmt}"`);
+      const fmt = c.opts.formatKey!;
+      const wantSize = isFixedFormat(fmt) ? /name="ad\.size" content="width=\d+,height=\d+"/ : new RegExp(`name="ad\\.size" content="${fmt}"`);
       if (!wantSize.test(html)) problems.push('bad ad.size');
       if (/maximum-scale|user-scalable/.test(html)) problems.push('DV360 preview viewport left');
     }
-    if (pkg.platform === 'fusify' && (c.opts.fusifyFormat as FusifyFormat) === 'halfscreen') {
+    if (pkg.platform === 'fusify' && c.opts.formatKey === 'halfscreen') {
       if (!/adPartner\.click\(\)/.test(html)) problems.push('no adPartner.click');
       if (!/a4p\.adpartner\.pro/.test(html)) problems.push('no adpartner bridge');
     }
@@ -162,8 +163,7 @@ it.skipIf(!existsSync(SRC))('emulates DV360 -> 3 platforms for every real source
       if (!/globalHTML5Api\.click/.test(bodyJs)) problems.push('body.js missing click');
       if (!/globalHTML5Api\.close/.test(bodyJs)) problems.push('body.js missing close');
       if (!/id="close"/.test(html)) problems.push('no close button');
-      const mode = (c.opts.admixerMode ?? 'fullscreen') as AdmixerMode;
-      const wantV = mode === 'fullscreen' ? "vertical: 'center'" : "vertical: 'bottom'";
+      const wantV = c.opts.formatKey === 'fullscreen' ? "vertical: 'center'" : "vertical: 'bottom'";
       if (!bodyJs.includes(wantV)) problems.push(`body.js anchor != ${wantV}`);
     }
 

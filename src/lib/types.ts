@@ -1,19 +1,29 @@
 export type TargetPlatform = 'umh' | 'fusify' | 'admixer';
 
-export type AdmixerMode = 'fullscreen' | 'halfscreen' | 'catfish';
-
-export type UmhFormat = 'standard' | 'fullscreen' | 'halfscreen' | 'catfish';
-
-export type FusifyFormat = 'standard' | 'halfscreen';
+/**
+ * Кожен формат матриці постачання: фіксовані розміри — за своїм розміром, три
+ * «пливкі» плейсменти — за назвою. Склад і платформи див. у ./formatMatrix.
+ */
+export type FormatKey =
+  | '300x250'
+  | '300x600'
+  | '320x100'
+  | '336x280'
+  | '728x90'
+  | 'fullscreen'
+  | 'halfscreen'
+  | 'catfish';
 
 export interface ConversionOptions {
   landingUrl: string;
-  admixerMode: AdmixerMode;
-  umhFormat: UmhFormat;
-  fusifyFormat: FusifyFormat;
+  /** Що саме конвертуємо. Якщо не передати — беремо розпізнаний із банера формат. */
+  formatKey: FormatKey;
   umhAutoButton: boolean;
   targetPlatforms: TargetPlatform[];
 }
+
+/** Звідки взявся розмір креативу — показуємо в UI, щоб здогадка не була безмовною. */
+export type SizeSource = 'ad.size meta' | 'container CSS' | 'file name';
 
 export interface CreativeMetadata {
   entryPath: string;
@@ -21,6 +31,11 @@ export interface CreativeMetadata {
   sourceFileName: string;
   width?: number;
   height?: number;
+  sizeSource?: SizeSource;
+  /** Формат із матриці, якщо розмір (або назва) банера його однозначно визначає. */
+  detectedFormat?: FormatKey;
+  /** 2 — джерело подане в подвійному (retina) варіанті базового розміру. */
+  detectedScale?: 1 | 2;
   title?: string;
   assetCount: number;
   sourceSizeBytes: number;

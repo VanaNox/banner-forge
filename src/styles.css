@@ -470,6 +470,74 @@ a {
   accent-color: var(--accent-strong);
 }
 
+/* Платформа, яка не замовляє поточний формат: лишається видимою, але недоступною. */
+.preset-row.unavailable {
+  opacity: 0.45;
+}
+
+.preset-row.unavailable input[type="checkbox"],
+.preset-row.unavailable button {
+  cursor: not-allowed;
+}
+
+/* Формат, зафіксований розпізнаванням завантаженого банера. */
+.format-lock {
+  display: grid;
+  grid-template-columns: 15px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--accent-soft-bg);
+  border-radius: 4px;
+  background: var(--accent-tint-bg);
+  color: var(--accent-soft-text);
+}
+
+.format-lock div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.format-lock strong {
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.format-lock span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.format-lock button {
+  border: 1px solid var(--border-input);
+  border-radius: 3px;
+  padding: 3px 7px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.format-lock button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.panel-note.warn {
+  color: var(--danger-text);
+}
+
 .preset-row button {
   display: inline-flex;
   align-items: center;
