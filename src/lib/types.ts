@@ -32,6 +32,8 @@ export interface CreativeMetadata {
   width?: number;
   height?: number;
   sizeSource?: SizeSource;
+  /** Розмір, оголошений самим банером, коли він розійшовся з розпізнаним форматом. */
+  declaredSize?: { width: number; height: number };
   /** Формат із матриці, якщо розмір (або назва) банера його однозначно визначає. */
   detectedFormat?: FormatKey;
   /** 2 — джерело подане в подвійному (retina) варіанті базового розміру. */

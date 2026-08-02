@@ -119,6 +119,41 @@ describe('readSourceCreative', () => {
     expect(source.metadata).toMatchObject({ width: 800, height: 400, sizeSource: 'file name', detectedFormat: 'halfscreen' });
   });
 
+  it('prefers a matrix size in the file name over a drifted ad.size, incl. a Cyrillic separator', async () => {
+    // Реальне DV360-джерело Levia_300х600.zip оголошує width=304,height=608 —
+    // на кілька пікселів повз формат. Розмір у назві (з кириличною «х») точніший.
+    const source = await readSourceCreative(await makeSizedDv360File(304, 608, 'Levia_300х600.zip'));
+
+    expect(source.metadata).toMatchObject({
+      width: 300,
+      height: 600,
+      sizeSource: 'file name',
+      detectedFormat: '300x600',
+      declaredSize: { width: 304, height: 608 }
+    });
+  });
+
+  it('names the package by the format and flags the drift when the source is off-size', async () => {
+    const result = await convertDv360Banner(await makeSizedDv360File(304, 608, 'Levia_300х600.zip'), {
+      landingUrl: 'https://example.com/landing',
+      targetPlatforms: ['fusify']
+    });
+
+    // Еталон називається 300x600_..._adpartner.zip — канонічний розмір формату,
+    // а не той, що оголосило джерело.
+    expect(result.packages[0].fileName).toBe('300x600_Levia_300_600_adpartner.zip');
+    expect(result.warnings).toContain(
+      'Source declares ad.size 304x608 but was converted as 300 x 600; the creative may not fit the slot exactly.'
+    );
+  });
+
+  it('keeps the declared size when neither it nor the file name is in the matrix', async () => {
+    const source = await readSourceCreative(await makeSizedDv360File(304, 608, 'Levia_banner.zip'));
+
+    expect(source.metadata).toMatchObject({ width: 304, height: 608, sizeSource: 'ad.size meta' });
+    expect(source.metadata.detectedFormat).toBeUndefined();
+  });
+
   it('reads the literal ad.size of an already converted package', async () => {
     const zip = new JSZip();
     zip.file('index.html', '<!doctype html><html><head><meta name="ad.size" content="catfish"></head><body></body></html>');
@@ -187,14 +222,15 @@ describe('transformHtml for UMH', () => {
 });
 
 describe('transformHtml for Fusify/AdPartner', () => {
-  it('keeps standard banners as a plain creative without the halfscreen API', () => {
+  it('leaves the click to the platform on standard banners, like the reference package', () => {
     const html = transformHtml(dv360Html, 'fusify', baseOptions);
 
     expect(html).not.toContain('a4p.adpartner.pro');
     expect(html).not.toContain('adPartner.click');
-    expect(html).toContain('var clickTag = window.clickTag || "https://example.com/landing"');
-    // Рідний обробник кліку креативу лишається робочим.
-    expect(html).toContain('window.open(window.clickTag)');
+    // Обидва покоління AdPartner-еталонів фіксованих розмірів не несуть клік-коду:
+    // свій window.open обходив би трекінг платформи (той самий висновок, що для UMH).
+    expect(html).not.toMatch(/var\s+clickTag\s*=/);
+    expect(html).not.toContain('window.open(window.clickTag');
   });
 
   it('flattens asset paths for the flat AdPartner archive', () => {

@@ -104,7 +104,13 @@ export async function convertDv360Banner(file: File | Blob, options?: Partial<Co
   );
 
   const bundle = await buildBundle(outputs, source.metadata.sourceFileName);
-  const warnings = [...new Set(outputs.flatMap((output) => output.warnings))];
+  const declared = source.metadata.declaredSize;
+  const warnings = [...new Set([
+    ...(declared
+      ? [`Source declares ad.size ${declared.width}x${declared.height} but was converted as ${formatSpec(formatKey).label}; the creative may not fit the slot exactly.`]
+      : []),
+    ...outputs.flatMap((output) => output.warnings)
+  ])];
 
   return {
     metadata: source.metadata,
@@ -156,38 +162,63 @@ export async function readSourceCreative(file: File | Blob): Promise<SourceCreat
   return { zip, metadata, entryHtml, rootFiles };
 }
 
-type DetectedFormat = Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource' | 'detectedFormat' | 'detectedScale'>;
+type DetectedFormat = Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource' | 'declaredSize' | 'detectedFormat' | 'detectedScale'>;
+
+type SizeCandidate = Required<Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource'>>;
 
 /**
- * Визначає, що саме завантажив користувач: спершу піксельний розмір (meta ad.size →
- * CSS контейнера → розмір у назві файлу), потім зіставлення з матрицею. Якщо розміру
- * немає, останній шанс — літеральний ad.size вже сконвертованого пакета або назва
- * архіву на кшталт `..._Halfscreen.zip`.
+ * Визначає, що саме завантажив користувач: збирає всіх кандидатів на розмір і бере
+ * першого, який лягає в матрицю. Порядок не жорсткий навмисне — трапляються DV360-
+ * джерела з «поплилим» ad.size (304x608 замість 300x600), і тоді розмір із назви
+ * архіву точніший за оголошений. Якщо розміру немає взагалі, останній шанс —
+ * літеральний ad.size вже сконвертованого пакета або назва на кшталт `..._Halfscreen`.
  */
 function detectCreativeFormat(entryHtml: string, names: string[]): DetectedFormat {
-  const size = detectCreativeSize(entryHtml, names);
-  const bySize = detectFormat(size.width, size.height);
+  const candidates = sizeCandidates(entryHtml, names);
+  const matched = candidates.find((candidate) => detectFormat(candidate.width, candidate.height));
+  const size = matched ?? candidates[0];
+
+  // Банер сам оголосив інший розмір, ніж той, за яким ми його розпізнали — це не
+  // привід не конвертувати, але креатив може не збігтися зі слотом на кілька пікселів.
+  const declared = candidates.find((candidate) => candidate.sizeSource === 'ad.size meta');
+  const declaredSize = declared && size && (declared.width !== size.width || declared.height !== size.height)
+    ? { width: declared.width, height: declared.height }
+    : undefined;
+
+  const bySize = size && detectFormat(size.width, size.height);
   if (bySize) {
-    return { ...size, detectedFormat: bySize.format.key, detectedScale: bySize.size.scale };
+    return { ...size, declaredSize, detectedFormat: bySize.format.key, detectedScale: bySize.size.scale };
   }
 
   const literal = entryHtml.match(/<meta\s+name=["']ad\.size["']\s+content=["'](fullscreen|halfscreen|catfish)["']/i);
   const byName = literal ? formatSpec(literal[1].toLowerCase() as FormatKey) : names.map(detectFormatFromName).find(Boolean);
-  return byName ? { ...size, detectedFormat: byName.key } : size;
+  return byName ? { ...size, detectedFormat: byName.key } : { ...size };
 }
 
-function detectCreativeSize(entryHtml: string, names: string[]): Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource'> {
-  const fromHtml = extractAdSizeWithSource(entryHtml);
-  if (fromHtml.width && fromHtml.height) return fromHtml;
+function sizeCandidates(entryHtml: string, names: string[]): SizeCandidate[] {
+  const candidates: SizeCandidate[] = [];
+
+  const meta = entryHtml.match(/<meta\s+name=["']ad\.size["']\s+content=["']width=(\d+),height=(\d+)["']/i);
+  if (meta) {
+    candidates.push({ width: Number(meta[1]), height: Number(meta[2]), sizeSource: 'ad.size meta' });
+  }
 
   for (const name of names) {
-    const match = name.match(/(?:^|[^\d])(\d{2,4})\s*[xX*]\s*(\d{2,4})(?:[^\d]|$)/);
+    // Розділювачем буває латинська x, кирилична х (реальні файли трапляються саме
+    // такими: `Levia_300х600.zip`), знак множення або зірочка.
+    const match = name.match(/(?:^|[^\d])(\d{2,4})\s*[xXхХ×*]\s*(\d{2,4})(?:[^\d]|$)/);
     if (match) {
-      return { width: Number(match[1]), height: Number(match[2]), sizeSource: 'file name' };
+      candidates.push({ width: Number(match[1]), height: Number(match[2]), sizeSource: 'file name' });
+      break;
     }
   }
 
-  return fromHtml;
+  const container = entryHtml.match(/width:\s*(\d+)px[\s\S]{0,80}height:\s*(\d+)px/i);
+  if (container) {
+    candidates.push({ width: Number(container[1]), height: Number(container[2]), sizeSource: 'container CSS' });
+  }
+
+  return candidates;
 }
 
 async function buildPlatformPackage(source: SourceCreative, platform: TargetPlatform, options: ConversionOptions): Promise<OutputPackage> {
@@ -333,8 +364,10 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
     if (options.formatKey === 'halfscreen') {
       return buildFusifyHalfscreenHtml(cleaned, html, options.formatKey);
     }
-    // Стандартні розміри AdPartner приймає як звичайний креатив без власного API.
-    return upsertClickTag(cleaned, landingUrl);
+    // Обидва покоління AdPartner-еталонів фіксованих розмірів не містять жодного
+    // клік-коду — ні clickTag, ні window.open, ні adPartner.click: клік вішає сама
+    // платформа. Власний window.open креативу тут обходив би трекінг AdPartner.
+    return removeClickTagDeclaration(neutralizeDirectClicks(cleaned));
   }
 
   return buildAdmixerHtml(normalized, options.formatKey);
@@ -504,22 +537,8 @@ function findCreativeEntry(htmlByPath: TextMap): string {
 }
 
 function extractAdSize(html: string): Pick<CreativeMetadata, 'width' | 'height'> {
-  const { width, height } = extractAdSizeWithSource(html);
-  return { width, height };
-}
-
-function extractAdSizeWithSource(html: string): Pick<CreativeMetadata, 'width' | 'height' | 'sizeSource'> {
-  const meta = html.match(/<meta\s+name=["']ad\.size["']\s+content=["']width=(\d+),height=(\d+)["']/i);
-  if (meta) {
-    return { width: Number(meta[1]), height: Number(meta[2]), sizeSource: 'ad.size meta' };
-  }
-
-  const container = html.match(/width:\s*(\d+)px[\s\S]{0,80}height:\s*(\d+)px/i);
-  if (container) {
-    return { width: Number(container[1]), height: Number(container[2]), sizeSource: 'container CSS' };
-  }
-
-  return {};
+  const [first] = sizeCandidates(html, []);
+  return first ? { width: first.width, height: first.height } : {};
 }
 
 function extractTitle(html: string): string | undefined {
@@ -602,7 +621,10 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
     if (options.formatKey === 'halfscreen') {
       checks.push({ label: 'AdPartner iframe bridge is connected', passed: /a4p\.adpartner\.pro\/adpartner-iframe\.min\.js/i.test(html) });
     } else {
-      checks.push({ label: 'Standard AdPartner creative carries no halfscreen API', passed: !/a4p\.adpartner\.pro|adPartner\.click/i.test(html) });
+      checks.push(
+        { label: 'Standard AdPartner creative carries no halfscreen API', passed: !/a4p\.adpartner\.pro|adPartner\.click/i.test(html) },
+        { label: 'AdPartner creative leaves the click to the platform (no clickTag, no window.open)', passed: !/var\s+clickTag\s*=/.test(html) && !/window\.open\((?:window\.)?clickTag/i.test(html) }
+      );
     }
   }
 
@@ -619,13 +641,15 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
 }
 
 /**
- * Розмір, який пакет має заявляти. Якщо з банера він не вичитався, беремо розмір
- * самого фіксованого формату — інакше невдале розпізнавання тихо підписало б пакет
- * чужим розміром.
+ * Розмір, який пакет має заявляти. Для фіксованого формату це завжди канонічний
+ * розмір самого формату: трапляються джерела з «поплилим» ad.size (304x608), а
+ * еталон однаково називається 300x600.js / 300x600_..._adpartner.zip. Розбіжність
+ * джерела з форматом окремо йде в warnings.
  */
 function outputDimensions(size: Partial<Dimensions>, formatKey: FormatKey): Dimensions | undefined {
-  if (size.width && size.height) return { width: size.width, height: size.height };
-  return fixedFormatDimensions(formatKey);
+  const canonical = fixedFormatDimensions(formatKey);
+  if (canonical) return canonical;
+  return size.width && size.height ? { width: size.width, height: size.height } : undefined;
 }
 
 function adSizeContent(html: string, formatKey: FormatKey): string {

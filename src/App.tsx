@@ -664,7 +664,10 @@ function DownloadButton({ output, children, className, ariaLabel }: { output: Ou
 
 function formatDimensions(metadata: CreativeMetadata | null): string {
   const size = creativeSize(metadata);
-  return size ? `${size.width} x ${size.height}` : '-';
+  if (!size) return '-';
+  const declared = metadata?.declaredSize;
+  // Джерело оголосило інший розмір, ніж той, за яким формат розпізнано — показуємо обидва.
+  return declared ? `${size.width} x ${size.height} (source: ${declared.width} x ${declared.height})` : `${size.width} x ${size.height}`;
 }
 
 function creativeSize(metadata: CreativeMetadata | null | undefined): Dimensions | undefined {
