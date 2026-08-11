@@ -19,7 +19,7 @@ the lock can be opened to pick a format by hand.
 | 300x250, 300x600, 320x100, 336x280, 728x90 | own size | Fusify / AdPartner |
 | Fullscreen | 492x696 or 696x492 | Admixer, UMH |
 | Halfscreen | 800x400 (UMH also 1600x800) | Fusify / AdPartner, Admixer, UMH |
-| Catfish | 1920x200 or 3840x400 | UMH |
+| Catfish | 1920x200 (UMH also 3840x400) | Admixer, UMH |
 
 `1600x800` and `3840x400` are the accepted 2x variants of their base size. The matrix lives
 in `src/lib/formatMatrix.ts` and is pinned by `tests/formatMatrix.test.ts`.

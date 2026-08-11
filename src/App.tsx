@@ -42,7 +42,8 @@ const ALL_PLATFORMS: TargetPlatform[] = ['umh', 'fusify', 'admixer'];
 const initialOptions: ConversionOptions = {
   landingUrl: 'https://www.example.com/summer-sale',
   formatKey: 'halfscreen',
-  umhAutoButton: true,
+  // Клік веде креатив через clickTag; увімкни, щоб віддати клік платформі UMH.
+  umhAutoButton: false,
   targetPlatforms: platformsForFormat('halfscreen')
 };
 

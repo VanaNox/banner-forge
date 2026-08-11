@@ -16,7 +16,11 @@ import type { ConversionOptions, ConversionResult, CreativeMetadata, FormatKey, 
 
 const DEFAULT_OPTIONS: Omit<ConversionOptions, 'formatKey'> = {
   landingUrl: 'https://www.google.com',
-  umhAutoButton: true,
+  // UMH за замовчуванням веде клік сам креатив: оголошений clickTag + робочий
+  // window.open(window.clickTag). Canvas-еталони clickTag не несуть узагалі (Adobe
+  // Animate ним не користується), але UMH його очікує в коді, тож паритет із
+  // еталоном тут не діє. З umhAutoButton=true клік повністю віддається платформі.
+  umhAutoButton: false,
   targetPlatforms: ['umh', 'fusify', 'admixer']
 };
 
@@ -402,14 +406,27 @@ function buildAdmixerHtml(html: string, mode: FormatKey): string {
   const neutralized = neutralizeDirectClicks(html);
   const bodyInner = extractBodyInner(neutralized);
   const headInner = extractHeadInner(neutralized);
-  const closeClass = mode === 'fullscreen' ? 'admix-close-button' : 'ad-close-button';
-  // CatFish: кнопка закриття у правому верхньому куті з відступом мінімум 5px (вимога доків).
-  const closeStyle = mode === 'fullscreen'
-    ? 'position:absolute;width:20px;height:20px;left:0;top:0;z-index:9999;cursor:pointer;'
-    : mode === 'catfish'
-      ? 'position:absolute;width:24px;height:24px;right:5px;top:5px;z-index:9999;cursor:pointer;'
-      : 'position:absolute;width:24px;height:24px;right:0;top:0;z-index:9999;cursor:pointer;';
+  const isFullscreen = mode === 'fullscreen';
 
+  // Розмітка в еталонах Admixer різна за форматом: fullscreen тримає креатив просто
+  // в <body> (клік — по document.body) і має кнопку `admix-close-button` 20x20 у
+  // лівому верхньому куті; halfscreen обгортає креатив у #container на всю площу
+  // (клік — по ньому) з кнопкою `ad-close-button` 24x24 всередині контейнера.
+  const closeButton = isFullscreen
+    ? '<div class="admix-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 20px; height: 20px;left: 0px; top: 0px;z-index:9999;cursor:pointer;"></div>'
+    // CatFish: кнопка закриття з відступом мінімум 5px від правого верхнього кута.
+    : `<div class="ad-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 24px; height: 24px;${mode === 'catfish' ? 'right: 5px; top: 5px;' : 'right: 0px; top: 0px;'}z-index:9999;cursor:pointer;"></div>`;
+
+  const stage = isFullscreen
+    ? `${bodyInner}
+${closeButton}`
+    : `<div id="container" style="position: absolute;left: 0;top: 0;width: 100%;height: 100%;">
+${bodyInner}
+${closeButton}
+</div>`;
+
+  // js/body.js іде перед рантаймом креативу, як в обох еталонах: він лише реєструє
+  // globalHTML5Api.on('load'), тож чим раніше — тим менший шанс проґавити подію.
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -417,11 +434,8 @@ function buildAdmixerHtml(html: string, mode: FormatKey): string {
 ${headInner}
 </head>
 <body style="margin:0;overflow:hidden;">
-<div id="admixer-click-area" style="position:relative;width:100%;height:100%;">
-${bodyInner}
-</div>
-<div class="${closeClass}" id="close" aria-label="Close ad" style="${closeStyle}"></div>
 <script type="text/javascript" src="js/body.js"></script>
+${stage}
 </body>
 </html>`;
 }
@@ -458,10 +472,10 @@ function buildAdmixerBodyJs(mode: FormatKey, creativeHeight?: number): string {
     };
   }
 
-  var clickArea = document.getElementById('admixer-click-area') || document.body;
+  var clickArea = ${mode === 'fullscreen' ? 'document.body' : "document.getElementById('container') || document.body"};
   clickArea.onclick = function (event) {
     prevent(event);
-    globalHTML5Api.click('');
+    globalHTML5Api.click();
     globalHTML5Api.close(true);
   };
 
@@ -925,7 +939,8 @@ function hasPlatformClickHook(html: string, platform: TargetPlatform, options: C
   if (platform === 'fusify') {
     return options.formatKey === 'halfscreen' ? /adPartner\.click/i.test(html) : true;
   }
-  return /globalHTML5Api\.click|admixer-click-area/i.test(html);
+  // Клік живе в js/body.js (globalHTML5Api.click), тож у самому body.html шукаємо його підключення.
+  return /globalHTML5Api\.click/i.test(html) || /src=["']?js\/body\.js/i.test(html);
 }
 
 function labelPlatform(platform: TargetPlatform): string {

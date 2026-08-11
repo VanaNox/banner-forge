@@ -71,7 +71,8 @@ export const FORMAT_MATRIX: FormatSpec[] = [
     label: 'Catfish',
     kind: 'fluid',
     sizes: [
-      { width: 1920, height: 200, scale: 1, platforms: ['umh'] },
+      // Admixer замовляє catfish лише в базовому 1920x200; 2x-варіант — тільки UMH.
+      { width: 1920, height: 200, scale: 1, platforms: ['admixer', 'umh'] },
       { width: 3840, height: 400, scale: 2, platforms: ['umh'] }
     ]
   }

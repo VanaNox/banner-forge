@@ -269,20 +269,33 @@ describe('transformHtml for Fusify/AdPartner', () => {
 });
 
 describe('transformHtml for Admixer', () => {
-  it('creates body.html content with API close and click hooks', () => {
+  it('wraps halfscreen in #container with the close button inside, like the reference', () => {
     const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'halfscreen' });
 
-    expect(html).toContain('id="admixer-click-area"');
-    expect(html).toContain('id="close"');
+    expect(html).toContain('<div id="container" style="position: absolute;left: 0;top: 0;width: 100%;height: 100%;">');
     expect(html).toContain('class="ad-close-button"');
-    expect(html).toContain('src="js/body.js"');
+    expect(html).toContain('id="close"');
+    // Кнопка закриття — всередині #container, як в еталоні halfscreen.
+    expect(html.indexOf('id="close"')).toBeLessThan(html.lastIndexOf('</div>'));
+    // js/body.js підключається перед рантаймом креативу.
+    expect(html.indexOf('src="js/body.js"')).toBeLessThan(html.indexOf('id="container"'));
+  });
+
+  it('keeps fullscreen creatives directly in body with the admix close button', () => {
+    const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'fullscreen' });
+
+    // Еталон fullscreen не має обгортки #container — клік іде по document.body.
+    expect(html).not.toContain('id="container"');
+    expect(html).toContain('class="admix-close-button"');
+    expect(html).toContain('width: 20px; height: 20px;left: 0px; top: 0px;');
   });
 
   it('places the CatFish close button in the upper right corner with a 5px margin', () => {
     const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'catfish' });
 
     expect(html).toContain('class="ad-close-button"');
-    expect(html).toContain('right:5px;top:5px');
+    expect(html).toContain('right: 5px; top: 5px;');
+    expect(html).toContain('id="container"');
   });
 
   it('routes clicks through globalHTML5Api instead of window.open', () => {
@@ -369,7 +382,11 @@ describe('convertDv360Banner', () => {
     expect(fusifyZip.file('images/frame 1.png')).toBeNull();
     expect(admixerZip.file('body.html')).toBeTruthy();
     expect(admixerZip.file('js/body.js')).toBeTruthy();
-    expect(await admixerZip.file('js/body.js')!.async('text')).toContain('globalHTML5Api.close(true)');
+    const admixerBodyJs = await admixerZip.file('js/body.js')!.async('text');
+    expect(admixerBodyJs).toContain('globalHTML5Api.close(true)');
+    // Еталони викликають click() без аргументу і клікають по #container у halfscreen.
+    expect(admixerBodyJs).toContain('globalHTML5Api.click();');
+    expect(admixerBodyJs).toContain("document.getElementById('container')");
     // Стенд index/ обовʼязковий: превʼю-тул Admixer читає з нього Settings.
     expect(admixerZip.file('index/index.html')).toBeTruthy();
     expect(admixerZip.file('index/settings.js')).toBeTruthy();
@@ -435,7 +452,10 @@ describe('convertDv360Banner', () => {
     const zip = await JSZip.loadAsync(output.blob);
     const html = await zip.file('index.html')!.async('text');
     expect(html).toContain('meta name="ad.size" content="catfish"');
-    expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=1"/);
+    // Типово клік веде креатив, тож auto_button=0 і clickTag присутній.
+    expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=0"/);
+    expect(html).toContain('var clickTag = window.clickTag ||');
+    expect(html).toContain('window.open(window.clickTag)');
     expect(output.validation.every((check) => check.passed)).toBe(true);
   });
 

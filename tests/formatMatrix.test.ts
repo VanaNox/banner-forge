@@ -23,6 +23,7 @@ const EXPECTED: Array<[TargetPlatform, FormatKey, string]> = [
   ['fusify', 'halfscreen', '800x400'],
   ['admixer', 'fullscreen', '492x696 or 696x492'],
   ['admixer', 'halfscreen', '800x400'],
+  ['admixer', 'catfish', '1920x200'],
   ['umh', 'fullscreen', '492x696 or 696x492'],
   ['umh', 'halfscreen', '800x400 or 1600x800'],
   ['umh', 'catfish', '1920x200 or 3840x400']
@@ -49,8 +50,11 @@ describe('delivery matrix', () => {
     }
   });
 
-  it('does not offer catfish outside UMH', () => {
-    expect(platformsForFormat('catfish')).toEqual(['umh']);
+  it('offers catfish to Admixer only in the base size, and the 2x variant to UMH alone', () => {
+    expect(new Set(platformsForFormat('catfish'))).toEqual(new Set<TargetPlatform>(['admixer', 'umh']));
+    expect(new Set(platformsForFormat('catfish', { width: 1920, height: 200 }))).toEqual(new Set<TargetPlatform>(['admixer', 'umh']));
+    expect(platformsForFormat('catfish', { width: 3840, height: 400 })).toEqual(['umh']);
+    expect(acceptsSize('admixer', 'catfish', { width: 3840, height: 400 })).toBe(false);
   });
 });
 
