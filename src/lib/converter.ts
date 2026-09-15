@@ -353,7 +353,16 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
     const clickReady = options.umhAutoButton
       ? removeClickTagDeclaration(neutralizeDirectClicks(cleaned))
       : upsertClickTag(cleaned, landingUrl);
-    return addHeadMeta(clickReady, [
+    // Fullscreen/halfscreen — «пливкі» плейсменти: реальний UMH-слот рідко має
+    // ту саму пропорцію, що нативний DV360-розмір, тож без цього креатив або
+    // прилипає у верхній лівий кут (фіксований контейнер менший за екран), або
+    // лишається статичним на весь показ. Розтягуємо контейнер під фактичний
+    // in-app viewport при завантаженні й на resize/orientationchange — той самий
+    // прийом, що дав би AdobeAn.makeResponsive() для canvas-еталона.
+    const staged = options.formatKey === 'fullscreen' || options.formatKey === 'halfscreen'
+      ? buildUmhFluidStageHtml(ensureViewportMeta(clickReady), html)
+      : clickReady;
+    return addHeadMeta(staged, [
       ['ad.type', 'banner'],
       ['ad.size', umhAdSizeContent(html, options.formatKey)],
       ['ad.vars', umhAdVars(html, options)]
@@ -398,6 +407,31 @@ ${bodyInner}
 </div>
 </div>`;
   return replaceBodyInner(withMeta, wrapped);
+}
+
+/**
+ * Обгортає тіло UMH fullscreen/halfscreen креативу в контейнер нативного розміру
+ * і масштабує його (незалежно по X і Y) під фактичний viewport слоту при
+ * завантаженні й на resize/orientationchange. Bannerify-креатив фіксований у px
+ * (на відміну від canvas-еталонів із AdobeAn.makeResponsive), тож без цього він
+ * або прилипає в верхній лівий кут слоту, або лишається статичним розміром на
+ * весь показ незалежно від екрана.
+ */
+function buildUmhFluidStageHtml(html: string, originalHtml: string): string {
+  const { width, height } = extractAdSize(originalHtml);
+  if (!width || !height) return html;
+  const bodyInner = extractBodyInner(html);
+  const stage = `<div id="umh-stage" style="position:absolute;top:0;left:0;width:${width}px;height:${height}px;transform-origin:0 0;">
+${bodyInner}
+</div>
+<script type="text/javascript">(function(){var s=document.getElementById('umh-stage'),w=${width},h=${height};function fit(){var vw=document.documentElement.clientWidth||window.innerWidth||w,vh=document.documentElement.clientHeight||window.innerHeight||h;s.style.transform='scale('+(vw/w)+','+(vh/h)+')';}fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',fit);})();</script>`;
+  return ensureUmhStageStyles(replaceBodyInner(html, stage));
+}
+
+function ensureUmhStageStyles(html: string): string {
+  const style = '<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}</style>';
+  if (html.includes(style)) return html;
+  return html.replace(/<\/head>/i, `${style}\n</head>`);
 }
 
 function buildAdmixerHtml(html: string, mode: FormatKey): string {

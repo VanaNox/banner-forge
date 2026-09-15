@@ -194,6 +194,29 @@ describe('transformHtml for UMH', () => {
     expect(catfish).toContain('meta name="ad.size" content="catfish"');
   });
 
+  it('wraps fullscreen/halfscreen bodies in a responsive stage that fills the slot on resize', () => {
+    const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'fullscreen' });
+    const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'halfscreen' });
+    const catfish = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'catfish' });
+    const fixed = transformHtml(dv360Html, 'umh', baseOptions);
+
+    for (const html of [fullscreen, halfscreen]) {
+      // Сцена нативного розміру джерела, яку скрипт розтягує під фактичний viewport
+      // при завантаженні й на resize/orientationchange — інакше фіксований Bannerify-
+      // креатив або прилипає в кут слоту, або лишається статичним на весь показ.
+      expect(html).toContain('id="umh-stage"');
+      expect(html).toContain('width:300px;height:600px');
+      expect(html).toContain("addEventListener('resize'");
+      expect(html).toContain("addEventListener('orientationchange'");
+      expect(html).toContain('<div id="banner">');
+    }
+
+    // Catfish кріпиться знизу платформою (ad.vars height), а фіксовані розміри
+    // AdPartner приймає як є — стейдж їм не потрібен.
+    expect(catfish).not.toContain('id="umh-stage"');
+    expect(fixed).not.toContain('id="umh-stage"');
+  });
+
   it('carries a pixel height in ad.vars for the UMH catfish strip', () => {
     const html = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'catfish' });
 
