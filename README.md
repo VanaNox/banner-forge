@@ -27,9 +27,26 @@ in `src/lib/formatMatrix.ts` and is pinned by `tests/formatMatrix.test.ts`.
 Creatives for 1+1, DV360, VPoint, Division Global Digital and RST are out of scope: those
 platforms take the DV360 package itself, so there is nothing to convert.
 
-Fluid placements do not auto-scale — a Bannerify creative is fixed in pixels, so the source
-must already be at the format's native size. Off-matrix combinations still convert but are
-reported as warnings.
+Off-matrix combinations still convert but are reported as warnings.
+
+### Two layouts in one package
+
+Like the freelancer reference banners (ZYN, November 2026), a fluid package can carry a
+second DV360 resize of the same creative and show whichever fits the slot. Add it under
+**Second layout** (or pass it as the third argument of `convertDv360Banner`):
+
+| Format | Platforms that pack it | Switch |
+| --- | --- | --- |
+| Fullscreen (e.g. 492x696 + 800x400) | UMH, Admixer | landscape layout once the slot is at least as wide as tall |
+| Halfscreen (e.g. 800x400 + 1920x200) | Admixer | wide layout from a 3:1 slot |
+
+Other platforms ignore the second layout. Without it, a package is built from the one
+source as before.
+
+UMH and Admixer fluid packages put the creative on a small stage. The stage scales the
+layout to fit the slot, centres it and fills the rest with the creative's background
+colour. Catfish stays at native size, centred. AdPartner halfscreen keeps its own
+`for_halfscreen_style.css` scaling.
 
 ## Development
 

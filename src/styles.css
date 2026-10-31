@@ -1447,3 +1447,277 @@ a {
     min-height: 320px;
   }
 }
+
+/* Адаптивний пакет із двох ресайзів: кнопка входу, зведення в Source і модалка Combine. */
+.combine-button {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-soft-bg);
+  border-radius: 4px;
+  background: var(--accent-tint-bg);
+  color: var(--accent-soft-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.combine-button:hover {
+  border-color: var(--accent);
+}
+
+.combine-button span {
+  display: grid;
+  gap: 1px;
+}
+
+.combine-button strong {
+  font-size: 12px;
+}
+
+.combine-button small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.combined-source {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-soft-bg);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+
+.combined-head {
+  display: grid;
+  grid-template-columns: 15px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-soft-text);
+}
+
+.combined-head strong {
+  color: var(--text-strong);
+}
+
+.layout-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft-bg);
+  color: var(--accent-soft-text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.combined-head button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.combined-row {
+  display: grid;
+  grid-template-columns: 15px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.combined-row span {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combined-row small {
+  color: var(--text-faint);
+}
+
+.combined-source .panel-note {
+  margin: 0;
+}
+
+.dialog.combine-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.combine-intro {
+  margin: 0;
+}
+
+.combine-slots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.combine-slot {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel-soft);
+}
+
+.combine-slot.filled {
+  border-color: var(--accent-soft-bg);
+  background: var(--accent-tint-bg);
+}
+
+.combine-slot-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.combine-drop {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  min-height: 116px;
+  padding: 10px;
+  border: 1.5px dashed var(--accent-strong);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  text-align: center;
+  cursor: pointer;
+}
+
+.combine-drop:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.combine-drop input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.combine-drop strong {
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.combine-drop span {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.combine-slot-file {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 116px;
+}
+
+.combine-size {
+  color: var(--text-strong);
+  font-size: 20px;
+  font-weight: 760;
+}
+
+.combine-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combine-format {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.combine-slot-file button {
+  justify-self: start;
+  height: 24px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.combine-summary {
+  padding: 10px 12px;
+  border: 1px solid var(--accent-soft-bg);
+  border-radius: 4px;
+  background: var(--accent-tint-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.combine-summary strong {
+  color: var(--accent-soft-text);
+}
+
+.combine-summary ul {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.combine-summary li span {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+.combine-actions {
+  display: grid;
+  grid-template-columns: auto 160px;
+  justify-content: end;
+  gap: 8px;
+}
+
+.combine-actions .convert-button {
+  margin-top: 0;
+}
+
+.combine-actions .convert-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.secondary-action {
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .combine-slots {
+    grid-template-columns: 1fr;
+  }
+}

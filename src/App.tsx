@@ -9,6 +9,7 @@ import {
   FileText,
   HelpCircle,
   Hexagon,
+  Layers,
   Loader2,
   Lock,
   Monitor,
@@ -31,7 +32,7 @@ import {
   describeSizes,
   formatSpec,
   platformsForFormat,
-  supportsFormat,
+  takesSecondLayout,
   type Dimensions
 } from './lib/formatMatrix';
 import { createPackagePreviewUrl } from './lib/preview';
@@ -77,6 +78,11 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   // Формат зафіксовано розпізнаванням; користувач може розблокувати й переобрати вручну.
   const [formatLocked, setFormatLocked] = useState(false);
+  // Другий (ширший) ресайз адаптивного пакета — задається лише через модалку Combine.
+  const [secondFile, setSecondFile] = useState<File | null>(null);
+  const [secondMetadata, setSecondMetadata] = useState<CreativeMetadata | null>(null);
+  // Відкрита модалка Combine і чим її заповнити (два кинуті разом zip або поточна пара).
+  const [combineSeed, setCombineSeed] = useState<CombineSlot[] | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -116,6 +122,9 @@ export function App() {
   async function handleFile(nextFile?: File) {
     if (!nextFile) return;
     setFile(nextFile);
+    // Звичайне завантаження одного zip — це знову один макет.
+    setSecondFile(null);
+    setSecondMetadata(null);
     setMetadata(null);
     setResult(null);
     setError(null);
@@ -143,9 +152,42 @@ export function App() {
     }
   }
 
+  // Один zip — звичайна конвертація; два разом — одразу модалка адаптивного пакета.
+  async function handleDroppedFiles(files: FileList | null | undefined) {
+    const zips = [...(files ?? [])];
+    if (zips.length === 0) return;
+    if (zips.length === 1) {
+      void handleFile(zips[0]);
+      return;
+    }
+    if (zips.length > 2) {
+      setError('Drop one zip, or two resizes to combine them into one adaptive package.');
+      return;
+    }
+    setError(null);
+    try {
+      setCombineSeed(await Promise.all(zips.map(inspectSlot)));
+    } catch (inspectionError) {
+      setError(inspectionError instanceof Error ? inspectionError.message : 'Could not inspect uploaded packages.');
+    }
+  }
+
+  function applyCombination(mobile: CombineSlot, wide: CombineSlot, formatKey: FormatKey) {
+    setCombineSeed(null);
+    setFile(mobile.file);
+    setMetadata(mobile.metadata);
+    setSecondFile(wide.file);
+    setSecondMetadata(wide.metadata);
+    setFormatLocked(true);
+    setError(null);
+    setOptions((current) => ({ ...current, formatKey, targetPlatforms: platformsForFormat(formatKey, creativeSize(mobile.metadata)) }));
+    setResult(null);
+    clearPreview();
+  }
+
   function onDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
-    void handleFile(event.dataTransfer.files[0]);
+    void handleDroppedFiles(event.dataTransfer.files);
   }
 
   function selectFormat(formatKey: FormatKey) {
@@ -175,7 +217,7 @@ export function App() {
     clearPreview();
 
     try {
-      const nextResult = await convertDv360Banner(file, options);
+      const nextResult = await convertDv360Banner(file, options, activeFormat.secondLayout ? secondFile ?? undefined : undefined);
       setResult(nextResult);
       const generated = nextResult.packages.filter((pkg) => pkg.platform !== 'bundle').length;
       setToast(`Conversion completed — ${generated} platform package${generated === 1 ? '' : 's'} generated`);
@@ -228,13 +270,47 @@ export function App() {
         <aside className="column source-column">
           <h2>1. Source</h2>
           <label className="dropzone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-            <input type="file" accept=".zip,application/zip" onChange={(event: ChangeEvent<HTMLInputElement>) => void handleFile(event.target.files?.[0])} />
+            <input type="file" accept=".zip,application/zip" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => { void handleDroppedFiles(event.target.files); event.target.value = ''; }} />
             <UploadCloud size={32} />
             <strong>Drop DV360 zip here</strong>
             <span>or click to browse</span>
           </label>
 
-          {file && (
+          <button
+            type="button"
+            className="combine-button"
+            onClick={() => setCombineSeed(file && metadata && secondFile && secondMetadata ? [{ file, metadata }, { file: secondFile, metadata: secondMetadata }] : [])}
+          >
+            <Layers size={16} />
+            <span>
+              <strong>Adaptive package — 2 layouts</strong>
+              <small>Mobile + desktop resize in one zip</small>
+            </span>
+          </button>
+
+          {file && secondFile ? (
+            <div className="combined-source">
+              <div className="combined-head">
+                <Layers size={15} />
+                <strong>Adaptive {activeFormat.label}</strong>
+                <span className="layout-badge">2 layouts</span>
+                <button type="button" onClick={() => metadata && secondMetadata && setCombineSeed([{ file, metadata }, { file: secondFile, metadata: secondMetadata }])}>Edit</button>
+              </div>
+              <div className="combined-row">
+                <Smartphone size={14} />
+                <span>{file.name}</span>
+                <small>{formatDimensions(metadata)}</small>
+              </div>
+              <div className="combined-row">
+                <Monitor size={14} />
+                <span>{secondFile.name}</span>
+                <small>{formatDimensions(secondMetadata)}</small>
+              </div>
+              {!activeFormat.secondLayout && (
+                <p className="panel-note warn">{activeFormat.label} packs one layout — the desktop resize is ignored. Switch the format back to use both.</p>
+              )}
+            </div>
+          ) : file && (
             <div className="file-chip">
               <FileText size={18} />
               <span>{file.name}</span>
@@ -308,7 +384,6 @@ export function App() {
               <PresetRow
                 key={platform}
                 checked={options.targetPlatforms.includes(platform)}
-                disabled={!supportsFormat(platform, options.formatKey)}
                 label={labelPlatform(platform)}
                 value={platformNote(platform, options)}
                 onChange={() => togglePlatform(platform)}
@@ -321,7 +396,7 @@ export function App() {
                   .filter((platform) => !acceptsSize(platform, options.formatKey, sourceSize))
                   .map((platform) => `${labelPlatform(platform)} expects ${describeSizes(acceptedSizes(platform, options.formatKey))}`)
                   .join('; ')}
-                {` — this creative is ${sourceSize.width}x${sourceSize.height} and will not auto-scale.`}
+                {` — this creative is ${sourceSize.width}x${sourceSize.height}; check the preview.`}
               </p>
             )}
           </section>
@@ -339,8 +414,12 @@ export function App() {
             <div className="source-card-body">
               <FileCode2 size={26} />
               <div>
-                <strong>{file?.name ?? 'No source package loaded'}</strong>
-                <span>{formatDimensions(activeMetadata)} / HTML5 / {activeMetadata?.assetCount ?? 0} files</span>
+                <strong>{file ? (secondFile ? `${file.name} + ${secondFile.name}` : file.name) : 'No source package loaded'}</strong>
+                <span>
+                  {secondFile
+                    ? `${formatDimensions(activeMetadata)} + ${formatDimensions(secondMetadata)} / HTML5 / 2 layouts`
+                    : `${formatDimensions(activeMetadata)} / HTML5 / ${activeMetadata?.assetCount ?? 0} files`}
+                </span>
               </div>
             </div>
             <div className="source-status">
@@ -492,6 +571,10 @@ export function App() {
         </div>
       )}
 
+      {combineSeed && (
+        <CombineDialog seed={combineSeed} onCancel={() => setCombineSeed(null)} onCombine={applyCombination} />
+      )}
+
       {activeDialog && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setActiveDialog(null)}>
           <section
@@ -567,6 +650,156 @@ export function App() {
       )}
     </main>
   );
+}
+
+interface CombineSlot {
+  file: File;
+  metadata: CreativeMetadata;
+}
+
+async function inspectSlot(file: File): Promise<CombineSlot> {
+  return { file, metadata: (await readSourceCreative(file)).metadata };
+}
+
+function aspectOf(slot: CombineSlot): number {
+  return slot.metadata.width && slot.metadata.height ? slot.metadata.width / slot.metadata.height : 1;
+}
+
+/** Вужчий ресайз — мобільний (основний), ширший — десктопний; порожні слоти лишаються на місці. */
+function orderSlots(slots: Array<CombineSlot | null>): Array<CombineSlot | null> {
+  const [first, second] = slots;
+  return first && second && aspectOf(first) > aspectOf(second) ? [second, first] : [first, second];
+}
+
+/**
+ * Модалка адаптивного пакета: два підписані слоти (мобільний і десктопний ресайз) і
+ * пояснення, що саме вийде — який формат, які платформи отримають обидва макети і коли
+ * пакет перемикається між ними.
+ */
+function CombineDialog({ seed, onCancel, onCombine }: { seed: CombineSlot[]; onCancel: () => void; onCombine: (mobile: CombineSlot, wide: CombineSlot, formatKey: FormatKey) => void }) {
+  const [slots, setSlots] = useState<Array<CombineSlot | null>>(() => orderSlots([seed[0] ?? null, seed[1] ?? null]));
+  const [swapped, setSwapped] = useState(() => Boolean(seed[0] && seed[1] && aspectOf(seed[0]) > aspectOf(seed[1])));
+  const [busySlot, setBusySlot] = useState<number | null>(null);
+  const [slotError, setSlotError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onCancel();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  async function fillSlot(index: number, nextFile?: File) {
+    if (!nextFile) return;
+    setBusySlot(index);
+    setSlotError(null);
+    try {
+      const slot = await inspectSlot(nextFile);
+      const next = [...slots];
+      next[index] = slot;
+      const ordered = orderSlots(next);
+      setSwapped(ordered[0] !== next[0]);
+      setSlots(ordered);
+    } catch (inspectionError) {
+      setSlotError(inspectionError instanceof Error ? inspectionError.message : 'Could not read this zip.');
+    } finally {
+      setBusySlot(null);
+    }
+  }
+
+  const [mobile, wide] = slots;
+  // Формат пакета задає мобільний (основний) ресайз: 492x696 → fullscreen, 800x400 → halfscreen.
+  const formatKey = mobile?.metadata.detectedFormat;
+  const spec = formatKey ? formatSpec(formatKey) : null;
+  const problem = !mobile || !wide
+    ? null
+    : !spec
+      ? `${formatDimensions(mobile.metadata)} is not in the delivery matrix, so the package format is unknown.`
+      : !spec.secondLayout
+        ? `${spec.label} packs a single layout. Two layouts work for Fullscreen (e.g. 492 x 696 + 800 x 400) and Halfscreen (e.g. 800 x 400 + 1920 x 200).`
+        : null;
+  const ready = Boolean(mobile && wide && spec?.secondLayout && !problem);
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onCancel}>
+      <section className="dialog combine-dialog" role="dialog" aria-modal="true" aria-label="Adaptive package — 2 layouts" onClick={(event) => event.stopPropagation()}>
+        <div className="dialog-head">
+          <h3>Adaptive package — 2 layouts</h3>
+          <button type="button" onClick={onCancel} aria-label="Close">x</button>
+        </div>
+        <div className="dialog-body">
+          <p className="combine-intro">
+            Two DV360 resizes of the same creative go into <strong>one zip</strong>. On air the banner shows the layout that fits the screen.
+          </p>
+
+          <div className="combine-slots">
+            {[0, 1].map((index) => {
+              const slot = slots[index];
+              const isMobile = index === 0;
+              return (
+                <div key={index} className={`combine-slot ${slot ? 'filled' : ''}`}>
+                  <div className="combine-slot-head">
+                    {isMobile ? <Smartphone size={16} /> : <Monitor size={16} />}
+                    <strong>{isMobile ? 'Mobile layout' : 'Desktop layout'}</strong>
+                  </div>
+                  {slot ? (
+                    <div className="combine-slot-file">
+                      <span className="combine-size">{formatDimensions(slot.metadata)}</span>
+                      <span className="combine-name" title={slot.file.name}>{slot.file.name}</span>
+                      <span className="combine-format">{slot.metadata.detectedFormat ? formatSpec(slot.metadata.detectedFormat).label : 'Not in matrix'} source</span>
+                      <button type="button" onClick={() => { const next = [...slots]; next[index] = null; setSlots(next); setSwapped(false); }}>Replace</button>
+                    </div>
+                  ) : (
+                    <label className="combine-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void fillSlot(index, event.dataTransfer.files[0]); }}>
+                      <input type="file" accept=".zip,application/zip" onChange={(event: ChangeEvent<HTMLInputElement>) => { void fillSlot(index, event.target.files?.[0]); event.target.value = ''; }} />
+                      {busySlot === index ? <Loader2 className="spin" size={20} /> : <UploadCloud size={20} />}
+                      <strong>Drop zip</strong>
+                      <span>{isMobile ? 'narrower: 492x696 (fullscreen) or 800x400 (halfscreen)' : 'wider: 800x400 (fullscreen) or 1920x200 (halfscreen)'}</span>
+                    </label>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {swapped && <p className="panel-note">The narrower resize was moved to Mobile automatically.</p>}
+          {slotError && <p className="panel-note warn">{slotError}</p>}
+          {problem && <p className="panel-note warn">{problem}</p>}
+
+          {ready && spec && formatKey && mobile && wide && (
+            <div className="combine-summary">
+              <strong>Result: {spec.label} package</strong>
+              <ul>
+                <li>{switchRule(formatKey, mobile.metadata, wide.metadata)}</li>
+                {ALL_PLATFORMS.map((platform) => (
+                  <li key={platform}>
+                    <span>{labelPlatform(platform)}</span>
+                    {takesSecondLayout(platform, formatKey)
+                      ? ` — both layouts in one zip`
+                      : ` — ${formatDimensions(mobile.metadata)} only (this platform packs one layout)`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="combine-actions">
+            <button type="button" className="secondary-action" onClick={onCancel}>Cancel</button>
+            <button type="button" className="convert-button" disabled={!ready} onClick={() => ready && mobile && wide && formatKey && onCombine(mobile, wide, formatKey)}>
+              <Layers size={17} />
+              Combine
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function switchRule(formatKey: FormatKey, mobile: CreativeMetadata, wide: CreativeMetadata): string {
+  if (formatKey === 'fullscreen') {
+    return `Portrait screens show ${formatDimensions(mobile)}; landscape phones and desktop show ${formatDimensions(wide)}.`;
+  }
+  return `Slots narrower than 3:1 (phones) show ${formatDimensions(mobile)}; wide desktop slots show ${formatDimensions(wide)}.`;
 }
 
 function MetadataRow({ label, value }: { label: string; value: string }) {
@@ -675,11 +908,8 @@ function creativeSize(metadata: CreativeMetadata | null | undefined): Dimensions
   return metadata?.width && metadata.height ? { width: metadata.width, height: metadata.height } : undefined;
 }
 
-/** Підпис під платформою: чому вона недоступна або що вона отримає для цього формату. */
+/** Підпис під платформою: що вона отримає для цього формату. Доступні всі платформи. */
 function platformNote(platform: TargetPlatform, options: ConversionOptions): string {
-  if (!supportsFormat(platform, options.formatKey)) {
-    return 'not in matrix for this format';
-  }
   if (platform === 'umh') {
     return options.umhAutoButton ? 'auto click' : 'creative click';
   }

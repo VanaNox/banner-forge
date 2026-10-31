@@ -9,7 +9,7 @@ import {
   fixedFormatDimensions,
   formatSpec,
   isFixedFormat,
-  supportsFormat,
+  takesSecondLayout,
   type Dimensions
 } from './formatMatrix';
 import type { ConversionOptions, ConversionResult, CreativeMetadata, FormatKey, OutputPackage, SizeSource, TargetPlatform, ValidationCheck } from './types';
@@ -73,20 +73,27 @@ type AssetPathMap = Map<string, string>;
 
 interface AssetPlan {
   files: Array<{
-    sourcePath: string;
     outputPath: string;
+    data: ArrayBuffer;
   }>;
-  pathMap: AssetPathMap;
+  /** Окрема мапа шляхів на кожен макет — однакові імена з різних ресайзів не плутаються. */
+  pathMaps: AssetPathMap[];
 }
 
-interface SourceCreative {
+export interface SourceCreative {
   zip: JSZip;
   metadata: CreativeMetadata;
   entryHtml: string;
   rootFiles: string[];
 }
 
-export async function convertDv360Banner(file: File | Blob, options?: Partial<ConversionOptions>): Promise<ConversionResult> {
+/**
+ * `secondLayout` — необовʼязковий другий DV360-ресайз того ж креативу (напр. 800x400 до
+ * fullscreen 492x696 або смуга 1920x200 до Admixer halfscreen). Платформи, які за
+ * еталонами несуть два макети (див. `secondLayout` у матриці), кладуть обидва в один
+ * пакет і показують потрібний за пропорцією слоту; решта його ігнорують.
+ */
+export async function convertDv360Banner(file: File | Blob, options?: Partial<ConversionOptions>, secondLayout?: File | Blob): Promise<ConversionResult> {
   const source = await readSourceCreative(file);
   // Формат беремо з банера, якщо викликач його не зафіксував — саме це дає
   // «завантажив і нічого не натискав». Якщо не розпізнали і не передали — падаємо,
@@ -102,16 +109,25 @@ export async function convertDv360Banner(file: File | Blob, options?: Partial<Co
 
   const mergedOptions: ConversionOptions = { ...DEFAULT_OPTIONS, ...options, formatKey };
   const targetPlatforms = mergedOptions.targetPlatforms.length > 0 ? mergedOptions.targetPlatforms : DEFAULT_OPTIONS.targetPlatforms;
+  const second = secondLayout ? await readSourceCreative(secondLayout) : undefined;
 
   const outputs = await Promise.all(
-    targetPlatforms.map((platform) => buildPlatformPackage(source, platform, mergedOptions))
+    targetPlatforms.map((platform) => buildPlatformPackage(
+      second && takesSecondLayout(platform, formatKey) ? [source, second] : [source],
+      platform,
+      mergedOptions
+    ))
   );
 
   const bundle = await buildBundle(outputs, source.metadata.sourceFileName);
   const declared = source.metadata.declaredSize;
+  const ignoredSecond = second && !targetPlatforms.some((platform) => takesSecondLayout(platform, formatKey));
   const warnings = [...new Set([
     ...(declared
       ? [`Source declares ad.size ${declared.width}x${declared.height} but was converted as ${formatSpec(formatKey).label}; the creative may not fit the slot exactly.`]
+      : []),
+    ...(ignoredSecond
+      ? [`The second layout ${second.metadata.sourceFileName} was not used: none of the selected platforms packs two layouts for ${formatSpec(formatKey).label}.`]
       : []),
     ...outputs.flatMap((output) => output.warnings)
   ])];
@@ -225,19 +241,29 @@ function sizeCandidates(entryHtml: string, names: string[]): SizeCandidate[] {
   return candidates;
 }
 
-async function buildPlatformPackage(source: SourceCreative, platform: TargetPlatform, options: ConversionOptions): Promise<OutputPackage> {
+async function buildPlatformPackage(layouts: SourceCreative[], platform: TargetPlatform, options: ConversionOptions): Promise<OutputPackage> {
   const out = new JSZip();
   const warnings: string[] = [];
+  const [source] = layouts;
   const entryName = platform === 'admixer' || (platform === 'fusify' && options.formatKey === 'halfscreen') ? 'body.html' : 'index.html';
-  const assetPlan = buildAssetPlan(source, platform);
-  const transformedHtml = transformHtmlWithAssets(source.entryHtml, platform, options, assetPlan.pathMap);
+  const assetPlan = await buildAssetPlan(layouts, platform);
+  // Кожен макет переписуємо під власну мапу ассетів ще до складання сцени: після
+  // злиття вже не видно, якому ресайзу належить посилання.
+  const transformedHtml = usesAdaptiveStage(platform, options.formatKey)
+    ? transformHtmlWithAssets(
+      composeAdaptiveStage(
+        layouts.map((layout, index) => rewriteAssetReferences(removeDv360PreviewScripts(layout.entryHtml), assetPlan.pathMaps[index], platform)),
+        options.formatKey
+      ),
+      platform,
+      options,
+      new Map()
+    )
+    : transformHtmlWithAssets(source.entryHtml, platform, options, assetPlan.pathMaps[0]);
   const validation: ValidationCheck[] = [];
 
-  for (const { sourcePath, outputPath } of assetPlan.files) {
-    const entry = source.zip.file(sourcePath);
-    if (entry) {
-      out.file(outputPath, await entry.async('arraybuffer'));
-    }
+  for (const { outputPath, data } of assetPlan.files) {
+    out.file(outputPath, data);
   }
 
   // AdPartner, UMH і Admixer: виносимо великий inline-рантайм креативу в окремий JS,
@@ -284,6 +310,7 @@ async function buildPlatformPackage(source: SourceCreative, platform: TargetPlat
 
   // Матриця постачання — це політика замовлення, а не дефект пакета, тож розбіжності
   // йдуть у warnings: UI не дає їх обрати, а програмний виклик про них дізнається.
+  // Звіряємо основний макет; другий — довільний ресайз того ж креативу.
   warnings.push(...matrixWarnings(source.metadata, platform, options));
 
   const sizeLimit = platformSizeLimit(platform);
@@ -340,7 +367,10 @@ export function transformHtml(html: string, platform: TargetPlatform, options: C
 
 function transformHtmlWithAssets(html: string, platform: TargetPlatform, options: ConversionOptions, assetPathMap: AssetPathMap): string {
   const landingUrl = escapeForScript(options.landingUrl || DEFAULT_OPTIONS.landingUrl);
-  const normalized = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
+  const rewritten = rewriteAssetReferences(removeDv360PreviewScripts(html), assetPathMap, platform);
+  // UMH і Admixer «пливкі» формати завжди їдуть у сцені, що вписує креатив у слот;
+  // уже складену (двомакетну) сцену composeAdaptiveStage лишає як є.
+  const normalized = usesAdaptiveStage(platform, options.formatKey) ? composeAdaptiveStage([rewritten], options.formatKey) : rewritten;
 
   if (platform === 'umh') {
     // DV360-превʼю лишає viewport із maximum-scale/user-scalable — у UMH-еталонах
@@ -353,14 +383,8 @@ function transformHtmlWithAssets(html: string, platform: TargetPlatform, options
     const clickReady = options.umhAutoButton
       ? removeClickTagDeclaration(neutralizeDirectClicks(cleaned))
       : upsertClickTag(cleaned, landingUrl);
-    // Fullscreen/halfscreen — «пливкі» плейсменти: реальний UMH-слот рідко має
-    // ту саму пропорцію, що нативний DV360-розмір, тож без цього креатив або
-    // прилипає у верхній лівий кут (фіксований контейнер менший за екран), або
-    // лишається статичним на весь показ. Розтягуємо контейнер під фактичний
-    // in-app viewport при завантаженні й на resize/orientationchange — той самий
-    // прийом, що дав би AdobeAn.makeResponsive() для canvas-еталона.
     const staged = options.formatKey === 'fullscreen' || options.formatKey === 'halfscreen'
-      ? buildUmhFluidStageHtml(ensureViewportMeta(clickReady), html)
+      ? ensureViewportMeta(clickReady)
       : clickReady;
     return addHeadMeta(staged, [
       ['ad.type', 'banner'],
@@ -409,29 +433,133 @@ ${bodyInner}
   return replaceBodyInner(withMeta, wrapped);
 }
 
-/**
- * Обгортає тіло UMH fullscreen/halfscreen креативу в контейнер нативного розміру
- * і масштабує його (незалежно по X і Y) під фактичний viewport слоту при
- * завантаженні й на resize/orientationchange. Bannerify-креатив фіксований у px
- * (на відміну від canvas-еталонів із AdobeAn.makeResponsive), тож без цього він
- * або прилипає в верхній лівий кут слоту, або лишається статичним розміром на
- * весь показ незалежно від екрана.
- */
-function buildUmhFluidStageHtml(html: string, originalHtml: string): string {
-  const { width, height } = extractAdSize(originalHtml);
-  if (!width || !height) return html;
-  const bodyInner = extractBodyInner(html);
-  const stage = `<div id="umh-stage" style="position:absolute;top:0;left:0;width:${width}px;height:${height}px;transform-origin:0 0;">
-${bodyInner}
-</div>
-<script type="text/javascript">(function(){var s=document.getElementById('umh-stage'),w=${width},h=${height};function fit(){var vw=document.documentElement.clientWidth||window.innerWidth||w,vh=document.documentElement.clientHeight||window.innerHeight||h;s.style.transform='scale('+(vw/w)+','+(vh/h)+')';}fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',fit);})();</script>`;
-  return ensureUmhStageStyles(replaceBodyInner(html, stage));
+const STAGE_ID = 'bf-stage';
+const INLINE_SCRIPT_RE = /<script\b(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+
+function usesAdaptiveStage(platform: TargetPlatform, formatKey: FormatKey): boolean {
+  // AdPartner halfscreen масштабує свій for_halfscreen_style.css — сцена тут не потрібна.
+  // Решта «пливких» форматів (і AdPartner fullscreen/catfish теж) їде на сцені.
+  return !isFixedFormat(formatKey) && !(platform === 'fusify' && formatKey === 'halfscreen');
 }
 
-function ensureUmhStageStyles(html: string): string {
-  const style = '<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}</style>';
-  if (html.includes(style)) return html;
-  return html.replace(/<\/head>/i, `${style}\n</head>`);
+/**
+ * Складає «пливкий» UMH/Admixer пакет так, як це роблять еталони фрілансера
+ * (ZYN, листопад 2026): усі макети формату лежать в одному документі, а скрипт сцени
+ * показує той, що пасує пропорції слоту, і вписує його без спотворень по центру.
+ *
+ * Правила взято з еталонів: fullscreen показує портрет, поки слот вужчий за висоту
+ * (`docW < docH`), Admixer halfscreen — 800x400, поки слот вужчий за 3:1. Масштаб —
+ * contain (як `makeResponsive(...,1,...)`), тож health warning і CTA ніколи не
+ * обрізаються; вільні поля заливаються фоном самого креативу. Catfish лишається в
+ * нативному розмірі по центру й лише стискається, якщо слот нижчий за креатив.
+ *
+ * Було (вересень 2026): один макет, розтягнутий незалежно по X/Y. З двома макетами
+ * пропорції слоту й креативу майже збігаються, тож спотворення більше не потрібне.
+ */
+function composeAdaptiveStage(htmls: string[], formatKey: FormatKey): string {
+  if (htmls.some((html) => html.includes(`id="${STAGE_ID}"`))) return htmls[0];
+
+  const layouts = namespaceLayouts(htmls).map((html, index) => {
+    const { width, height } = extractAdSize(html);
+    const scripts: string[] = [];
+    const markup = extractBodyInner(html).replace(INLINE_SCRIPT_RE, (_match, code: string) => {
+      scripts.push(code.trim());
+      return '';
+    }).trim();
+    return { html, index, width, height, markup, scripts, background: extractCreativeBackground(html) };
+  });
+  // Без розміру не вписати — віддаємо джерело як є (поведінка до сцени).
+  if (layouts.some((layout) => !layout.width || !layout.height)) return htmls[0];
+
+  const [primary] = layouts;
+  const ordered = [...layouts].sort((a, b) => a.width! / a.height! - b.width! / b.height!);
+  const stage = `<div id="${STAGE_ID}">
+${ordered.map((layout) => `<div class="bf-layout" data-w="${layout.width}" data-h="${layout.height}" data-bg="${layout.background}" style="width:${layout.width}px;height:${layout.height}px;display:${layout === primary ? 'block' : 'none'};">
+${layout.markup}
+</div>`).join('\n')}
+</div>
+<script type="text/javascript">${[stageScript(formatKey), ...layouts.flatMap((layout) => layout.scripts)].join('\n;\n')}</script>`;
+
+  const extraHead = layouts.slice(1).map((layout) => headStyles(layout.html)).filter(Boolean).join('\n');
+  const stageStyle = `<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}#${STAGE_ID}{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;}#${STAGE_ID}>.bf-layout{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);}</style>`;
+  const withHead = primary.html.replace(/<\/head>/i, `${extraHead ? `${extraHead}\n` : ''}${stageStyle}\n</head>`);
+  return replaceBodyInner(withHead, stage);
+}
+
+function stageScript(formatKey: FormatKey): string {
+  const switchAspect = formatSpec(formatKey).secondLayout?.switchAspect ?? 0;
+  const mode = formatKey === 'catfish' ? 'native' : 'contain';
+  return `(function(){var st=document.getElementById('${STAGE_ID}');if(!st)return;var ls=[],c=st.children,T=${switchAspect},M='${mode}';for(var i=0;i<c.length;i++)if(c[i].getAttribute('data-w'))ls.push(c[i]);function fit(){var d=document.documentElement,vw=d.clientWidth||window.innerWidth,vh=d.clientHeight||window.innerHeight;if(!vw||!vh||!ls.length)return;var p=ls.length>1&&vw/vh>=T?ls[ls.length-1]:ls[0];for(var j=0;j<ls.length;j++){var on=ls[j]===p?'block':'none';if(ls[j].style.display!==on)ls[j].style.display=on;}var w=+p.getAttribute('data-w'),h=+p.getAttribute('data-h'),s=M==='native'?Math.min(1,vh/h):Math.min(vw/w,vh/h);p.style.transform='translate(-50%,-50%) scale('+s+')';st.style.backgroundColor=p.getAttribute('data-bg')||'';}fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',fit);})();`;
+}
+
+/**
+ * Ресайзи одного Bannerify-проєкту можуть ділити id елементів і назви keyframes.
+ * В одному документі це зламало б анімацію, тож у другого й далі макетів збіги
+ * перейменовуємо (id — і в CSS, і в getElementById; keyframes — лише з іншим тілом).
+ */
+function namespaceLayouts(htmls: string[]): string[] {
+  const seenIds = new Set<string>();
+  const seenFrames = new Map<string, string>();
+  return htmls.map((html, index) => {
+    let next = html;
+    const suffix = `_l${index + 1}`;
+    for (const id of bodyIds(html)) {
+      if (index > 0 && seenIds.has(id)) {
+        next = renameId(next, id, `${id}${suffix}`);
+        seenIds.add(`${id}${suffix}`);
+      } else {
+        seenIds.add(id);
+      }
+    }
+    for (const [name, body] of keyframeDefinitions(html)) {
+      if (index > 0 && seenFrames.has(name) && seenFrames.get(name) !== body) {
+        next = renameKeyframes(next, name, `${name}${suffix}`);
+      } else if (!seenFrames.has(name)) {
+        seenFrames.set(name, body);
+      }
+    }
+    return next;
+  });
+}
+
+function bodyIds(html: string): string[] {
+  return [...new Set([...extractBodyInner(html).matchAll(/\sid=["']([^"']+)["']/gi)].map((match) => match[1]))];
+}
+
+function renameId(html: string, from: string, to: string): string {
+  const name = escapeRegExp(from);
+  return html
+    .replace(new RegExp(`(["'])${name}\\1`, 'g'), `$1${to}$1`)
+    .replace(new RegExp(`#${name}(?![\\w-])`, 'g'), `#${to}`);
+}
+
+function keyframeDefinitions(html: string): Map<string, string> {
+  const frames = new Map<string, string>();
+  for (const match of html.matchAll(/@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}/g)) {
+    if (!frames.has(match[1])) frames.set(match[1], match[2].replace(/\s+/g, ''));
+  }
+  return frames;
+}
+
+function renameKeyframes(html: string, from: string, to: string): string {
+  const name = escapeRegExp(from);
+  return html
+    .replace(new RegExp(`(@(?:-webkit-)?keyframes\\s+)${name}(?![\\w-])`, 'g'), `$1${to}`)
+    .replace(new RegExp(`((?:-webkit-)?animation(?:-name)?\\s*:\\s*)${name}(?![\\w-])`, 'g'), `$1${to}`);
+}
+
+/** Фон контейнера Bannerify (`#b_<id>{background-color:…}`) — ним заливаються поля сцени. */
+function extractCreativeBackground(html: string): string {
+  const containerId = extractBodyInner(html).match(/<div[^>]*\sid=["']([^"']+)["']/i)?.[1];
+  if (!containerId) return '';
+  const rule = html.match(new RegExp(`#${escapeRegExp(containerId)}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+  return rule.match(/background(?:-color)?\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z]+)/i)?.[1] ?? '';
+}
+
+/** Стилі з head другого макета: самі <style> і <link rel=stylesheet>, без meta/clickTag. */
+function headStyles(html: string): string {
+  const head = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? '';
+  return [...head.matchAll(/<style\b[\s\S]*?<\/style>|<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi)].map((match) => match[0]).join('\n');
 }
 
 function buildAdmixerHtml(html: string, mode: FormatKey): string {
@@ -616,31 +744,54 @@ function replaceBodyInner(html: string, inner: string): string {
   return `<!doctype html><html><head></head><body>${inner}</body></html>`;
 }
 
-function buildAssetPlan(source: SourceCreative, platform: TargetPlatform): AssetPlan {
+async function buildAssetPlan(layouts: SourceCreative[], platform: TargetPlatform): Promise<AssetPlan> {
   const files: AssetPlan['files'] = [];
-  const pathMap: AssetPathMap = new Map();
-  const usedOutputPaths = new Set<string>();
+  // Ключ — шлях у пакеті (lowercase), значення — байти: той самий файл з двох ресайзів
+  // кладемо один раз, а різні файли з однаковою назвою розводимо суфіксом.
+  const written = new Map<string, ArrayBuffer>();
+  const pathMaps: AssetPathMap[] = [];
 
-  source.rootFiles.forEach((sourcePath) => {
-    const relativePath = stripBase(sourcePath, source.metadata.basePath);
-    if (!relativePath || isSystemFile(relativePath) || /\.html?$/i.test(relativePath)) {
-      return;
+  for (const source of layouts) {
+    const pathMap: AssetPathMap = new Map();
+    for (const sourcePath of source.rootFiles) {
+      const relativePath = stripBase(sourcePath, source.metadata.basePath);
+      if (!relativePath || isSystemFile(relativePath) || /\.html?$/i.test(relativePath)) {
+        continue;
+      }
+
+      const extension = extensionForPath(relativePath);
+      const entry = source.zip.file(sourcePath);
+      if (!entry || !isAllowedAssetExtension(extension, platform)) {
+        continue;
+      }
+
+      const data = await entry.async('arraybuffer');
+      const preferred = safeAssetPath(relativePath, platform);
+      const existing = written.get(preferred.toLowerCase());
+      let outputPath = preferred;
+      if (!existing || !sameBytes(existing, data)) {
+        outputPath = uniqueOutputPath(preferred, written);
+        written.set(outputPath.toLowerCase(), data);
+        files.push({ outputPath, data });
+      }
+      pathMap.set(normalizePath(relativePath), outputPath);
+      pathMap.set(normalizePath(sourcePath), outputPath);
+      pathMap.set(basename(relativePath), platform === 'fusify' ? outputPath : basename(outputPath));
     }
+    pathMaps.push(pathMap);
+  }
 
-    const extension = extensionForPath(relativePath);
-    if (!isAllowedAssetExtension(extension, platform)) {
-      return;
-    }
+  return { files, pathMaps };
+}
 
-    const outputPath = uniqueOutputPath(safeAssetPath(relativePath, platform), usedOutputPaths);
-    usedOutputPaths.add(outputPath.toLowerCase());
-    files.push({ sourcePath, outputPath });
-    pathMap.set(normalizePath(relativePath), outputPath);
-    pathMap.set(normalizePath(sourcePath), outputPath);
-    pathMap.set(basename(relativePath), platform === 'fusify' ? outputPath : basename(outputPath));
-  });
-
-  return { files, pathMap };
+function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  const left = new Uint8Array(a);
+  const right = new Uint8Array(b);
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function validatePlatformPackage(platform: TargetPlatform, entries: string[], html: string, sizeBytes: number, entryName: string, options: ConversionOptions): ValidationCheck[] {
@@ -652,6 +803,10 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
     { label: 'Platform click API is wired', passed: hasPlatformClickHook(html, platform, options) },
     { label: `Package is under ${(platformSizeLimit(platform) / 1000).toFixed(0)} KB`, passed: sizeBytes <= platformSizeLimit(platform) }
   ];
+
+  if (usesAdaptiveStage(platform, options.formatKey)) {
+    checks.push({ label: 'Creative fits the placement on any screen (adaptive stage)', passed: html.includes(`id="${STAGE_ID}"`) });
+  }
 
   if (platform === 'umh') {
     const adSizePattern = isFixedFormat(options.formatKey)
@@ -705,13 +860,12 @@ function adSizeContent(html: string, formatKey: FormatKey): string {
   return size ? `width=${size.width},height=${size.height}` : 'width=300,height=600';
 }
 
-/** Формат поза матрицею або джерело не того нативного розміру — попереджаємо явно. */
+/**
+ * Джерело не того нативного розміру — попереджаємо явно. Будь-який формат можна
+ * зібрати під будь-яку платформу; матриця лише каже, які платформи обрані типово.
+ */
 function matrixWarnings(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string[] {
   const label = `${labelPlatform(platform)} ${formatSpec(options.formatKey).label}`;
-  if (!supportsFormat(platform, options.formatKey)) {
-    return [`${label} is not in the delivery matrix — this combination is not ordered for this platform.`];
-  }
-
   const size = metadata.width && metadata.height ? { width: metadata.width, height: metadata.height } : undefined;
   if (!size) {
     return [`${label}: could not read the creative size, so it was not checked against the format's native size.`];
@@ -724,9 +878,9 @@ function matrixWarnings(metadata: CreativeMetadata, platform: TargetPlatform, op
 }
 
 function fixedSizeScalingNote(metadata: CreativeMetadata, platform: TargetPlatform, options: ConversionOptions): string | undefined {
-  // Фіксовані розміри AdPartner приймає як є — попередження стосується лише
-  // «пливких» плейсментів, які платформа розтягує.
-  if (isFixedFormat(options.formatKey) || !metadata.width || !metadata.height) {
+  // Фіксовані розміри AdPartner приймає як є, а UMH/Admixer «пливкі» формати тепер
+  // вписуються сценою — попередження лишається лише для AdPartner halfscreen.
+  if (isFixedFormat(options.formatKey) || usesAdaptiveStage(platform, options.formatKey) || !metadata.width || !metadata.height) {
     return undefined;
   }
   const stretchFormat = `${labelPlatform(platform)} ${options.formatKey}`;
@@ -872,7 +1026,7 @@ function platformSizeLimit(platform: TargetPlatform): number {
   return 300_000;
 }
 
-function uniqueOutputPath(path: string, used: Set<string>): string {
+function uniqueOutputPath(path: string, used: { has(key: string): boolean }): string {
   if (!used.has(path.toLowerCase())) return path;
   const dir = dirname(path);
   const file = basename(path);

@@ -194,27 +194,27 @@ describe('transformHtml for UMH', () => {
     expect(catfish).toContain('meta name="ad.size" content="catfish"');
   });
 
-  it('wraps fullscreen/halfscreen bodies in a responsive stage that fills the slot on resize', () => {
+  it('puts fluid formats on an adaptive stage that refits the creative on resize', () => {
     const fullscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'fullscreen' });
     const halfscreen = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'halfscreen' });
     const catfish = transformHtml(dv360Html, 'umh', { ...baseOptions, formatKey: 'catfish' });
     const fixed = transformHtml(dv360Html, 'umh', baseOptions);
 
-    for (const html of [fullscreen, halfscreen]) {
-      // Сцена нативного розміру джерела, яку скрипт розтягує під фактичний viewport
-      // при завантаженні й на resize/orientationchange — інакше фіксований Bannerify-
-      // креатив або прилипає в кут слоту, або лишається статичним на весь показ.
-      expect(html).toContain('id="umh-stage"');
-      expect(html).toContain('width:300px;height:600px');
+    for (const html of [fullscreen, halfscreen, catfish]) {
+      // Макет нативного розміру по центру слоту; скрипт вписує його при завантаженні й
+      // на resize/orientationchange — інакше фіксований Bannerify-креатив прилипає в кут.
+      expect(html).toContain('id="bf-stage"');
+      expect(html).toContain('class="bf-layout" data-w="300" data-h="600"');
       expect(html).toContain("addEventListener('resize'");
       expect(html).toContain("addEventListener('orientationchange'");
       expect(html).toContain('<div id="banner">');
     }
+    // Вписуємо без спотворень (contain), а catfish лишається в нативному розмірі.
+    expect(fullscreen).toContain("M='contain'");
+    expect(catfish).toContain("M='native'");
 
-    // Catfish кріпиться знизу платформою (ad.vars height), а фіксовані розміри
-    // AdPartner приймає як є — стейдж їм не потрібен.
-    expect(catfish).not.toContain('id="umh-stage"');
-    expect(fixed).not.toContain('id="umh-stage"');
+    // Фіксовані розміри платформа приймає як є — сцена їм не потрібна.
+    expect(fixed).not.toContain('id="bf-stage"');
   });
 
   it('carries a pixel height in ad.vars for the UMH catfish strip', () => {
@@ -370,13 +370,23 @@ describe('convertDv360Banner', () => {
     ).rejects.toThrow(/970x250 is not in the delivery matrix/);
   });
 
-  it('warns when a platform does not order the format, or the source is the wrong native size', async () => {
+  it('builds any format for any platform and only warns about a wrong native size', async () => {
+    // Fullscreen за матрицею AdPartner не замовляє, але зібрати його можна — без попереджень.
+    const unordered = await convertDv360Banner(await makeSizedDv360File(492, 696), {
+      landingUrl: 'https://example.com/landing',
+      targetPlatforms: ['fusify']
+    });
+    expect(unordered.warnings).toEqual([]);
+    expect(unordered.packages[0].validation.every((check) => check.passed)).toBe(true);
+    const fusifyZip = await JSZip.loadAsync(unordered.packages[0].blob);
+    expect(await fusifyZip.file('index.html')!.async('text')).toContain('id="bf-stage"');
+
     const offMatrix = await convertDv360Banner(await makeSizedDv360File(800, 400), {
       landingUrl: 'https://example.com/landing',
       formatKey: 'catfish',
       targetPlatforms: ['fusify']
     });
-    expect(offMatrix.warnings).toContain('Fusify/AdPartner Catfish is not in the delivery matrix — this combination is not ordered for this platform.');
+    expect(offMatrix.warnings).toContain('Fusify/AdPartner Catfish expects a 1920x200 or 3840x400 source; this creative is 800x400.');
 
     // 1600x800 — прийнятний 2x halfscreen тільько для UMH; AdPartner чекає 800x400.
     const wrongSize = await convertDv360Banner(await makeSizedDv360File(1600, 800), {
@@ -478,8 +488,45 @@ describe('convertDv360Banner', () => {
     // Типово клік веде креатив, тож auto_button=0 і clickTag присутній.
     expect(html).toMatch(/meta name="ad.vars" content="height=\d+,auto_button=0"/);
     expect(html).toContain('var clickTag = window.clickTag ||');
-    expect(html).toContain('window.open(window.clickTag)');
+    // Рантайм креативу разом зі скриптом сцени винесено в CatFish.js — клік живе там.
+    expect(html).toContain('src="CatFish.js"');
+    expect(await zip.file('CatFish.js')!.async('text')).toContain('window.open(window.clickTag)');
     expect(output.validation.every((check) => check.passed)).toBe(true);
+  });
+
+  it('packs a second layout only for the platforms whose references carry two', async () => {
+    const result = await convertDv360Banner(
+      await makeSizedDv360File(492, 696),
+      { landingUrl: 'https://example.com/landing', targetPlatforms: ['umh', 'admixer'] },
+      await makeSizedDv360File(800, 400)
+    );
+
+    for (const pkg of result.packages.filter((item) => item.platform !== 'bundle')) {
+      const zip = await JSZip.loadAsync(pkg.blob);
+      const html = await zip.file(pkg.platform === 'admixer' ? 'body.html' : 'index.html')!.async('text');
+      const js = await zip.file(pkg.platform === 'admixer' ? 'js/fullscreen.js' : 'fullscreen.js')!.async('text');
+      // Портрет перший (вужчий), ландшафт другий — скрипт перемикає на w >= h (T=1).
+      expect([...html.matchAll(/data-w="(\d+)" data-h="(\d+)"/g)].map((match) => `${match[1]}x${match[2]}`)).toEqual(['492x696', '800x400']);
+      expect(js).toContain('T=1');
+      // Обидва ресайзи з одного шаблону мають id="banner" — другий перейменовано.
+      expect(html).toContain('id="banner_l2"');
+      expect(js).toContain("getElementById('banner_l2')");
+      expect(pkg.validation.every((check) => check.passed)).toBe(true);
+    }
+
+    // UMH halfscreen за еталоном — один макет: смуга 1920x200 іде лише в Admixer.
+    const half = await convertDv360Banner(
+      await makeSizedDv360File(800, 400),
+      { landingUrl: 'https://example.com/landing', targetPlatforms: ['umh', 'admixer'] },
+      await makeSizedDv360File(1920, 200)
+    );
+    const layoutsOf = async (pkg: (typeof half.packages)[number]) => {
+      const zip = await JSZip.loadAsync(pkg.blob);
+      const html = await zip.file(pkg.platform === 'admixer' ? 'body.html' : 'index.html')!.async('text');
+      return [...html.matchAll(/data-w="(\d+)"/g)].length;
+    };
+    expect(await layoutsOf(half.packages[0])).toBe(1);
+    expect(await layoutsOf(half.packages[1])).toBe(2);
   });
 
   it('externalizes the UMH runtime into a format-named .js file at the root', async () => {

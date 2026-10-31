@@ -25,6 +25,16 @@ export interface FormatSpec {
   kind: 'fixed' | 'fluid';
   /** Усі нативні розміри джерела, які формат приймає, разом із платформами. */
   sizes: SourceSize[];
+  /**
+   * Пакет може нести другий макет (інший ресайз) і сам обирати потрібний за пропорцією
+   * слоту — так зроблені еталони фрілансера (ZYN, листопад 2026). Другий макет
+   * необовʼязковий: без нього пакет збирається з одним, як раніше.
+   */
+  secondLayout?: {
+    platforms: TargetPlatform[];
+    /** Ширина / висота слоту, від якої показується ширший із двох макетів. */
+    switchAspect: number;
+  };
 }
 
 export interface FormatDetection {
@@ -55,7 +65,9 @@ export const FORMAT_MATRIX: FormatSpec[] = [
     sizes: [
       { width: 492, height: 696, scale: 1, platforms: ['admixer', 'umh'] },
       { width: 696, height: 492, scale: 1, platforms: ['admixer', 'umh'] }
-    ]
+    ],
+    // Еталони: портрет + ландшафт (492x696 + 800x400), перемикання на `docW < docH`.
+    secondLayout: { platforms: ['umh', 'admixer'], switchAspect: 1 }
   },
   {
     key: 'halfscreen',
@@ -64,7 +76,10 @@ export const FORMAT_MATRIX: FormatSpec[] = [
     sizes: [
       { width: 800, height: 400, scale: 1, platforms: ['fusify', 'admixer', 'umh'] },
       { width: 1600, height: 800, scale: 2, platforms: ['umh'] }
-    ]
+    ],
+    // Еталони: лише Admixer halfscreen несе другий макет (800x400 + смуга 1920x200,
+    // перемикання на `w/h < 3`); UMH і AdPartner halfscreen — один макет.
+    secondLayout: { platforms: ['admixer'], switchAspect: 3 }
   },
   {
     key: 'catfish',
@@ -131,13 +146,27 @@ export function platformsForFormat(key: FormatKey, size?: Dimensions): TargetPla
   return [...platforms];
 }
 
+/** Чи кладе платформа в пакет цього формату другий макет, якщо його подали. */
+export function takesSecondLayout(platform: TargetPlatform, key: FormatKey): boolean {
+  return Boolean(formatSpec(key).secondLayout?.platforms.includes(platform));
+}
+
+/**
+ * Чи замовляє платформа цей формат за матрицею. Це лише типовий вибір платформ у UI:
+ * зібрати можна будь-який формат під будь-яку платформу.
+ */
 export function supportsFormat(platform: TargetPlatform, key: FormatKey): boolean {
   return platformsForFormat(key).includes(platform);
 }
 
-/** Нативні розміри, які платформа приймає для формату. */
+/**
+ * Нативні розміри, які платформа приймає для формату. Для платформи, якій формат за
+ * матрицею не замовляють, — будь-який розмір самого формату.
+ */
 export function acceptedSizes(platform: TargetPlatform, key: FormatKey): SourceSize[] {
-  return formatSpec(key).sizes.filter((size) => size.platforms.includes(platform));
+  const sizes = formatSpec(key).sizes;
+  const own = sizes.filter((size) => size.platforms.includes(platform));
+  return own.length > 0 ? own : sizes;
 }
 
 export function acceptsSize(platform: TargetPlatform, key: FormatKey, size?: Dimensions): boolean {
