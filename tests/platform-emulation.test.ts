@@ -43,7 +43,7 @@ const cases: Case[] = [
     src: 'Sampling_01_320x480_Fullscreen.zip', label: 'admx-fullscreen 320x480',
     opts: { targetPlatforms: ['admixer'], formatKey: 'fullscreen' },
     expectEntry: 'body.html', expectJs: 'js/fullscreen.js',
-    expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
+    expectExtra: ['js/body.js']
   },
   {
     src: 'Sampling_01_800x400_Halfscreen.zip', label: 'adp-halfscreen 800x400',
@@ -60,7 +60,7 @@ const cases: Case[] = [
     src: 'Sampling_01_800x400_Halfscreen.zip', label: 'admx-halfscreen 800x400',
     opts: { targetPlatforms: ['admixer'], formatKey: 'halfscreen' },
     expectEntry: 'body.html', expectJs: 'js/half.js',
-    expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
+    expectExtra: ['js/body.js']
   },
   {
     src: 'Sampling_01_1920x200_Catfish.zip', label: 'umh-catfish 1920x200',
@@ -71,7 +71,7 @@ const cases: Case[] = [
     src: 'Sampling_01_1920x200_Catfish.zip', label: 'admx-catfish 1920x200',
     opts: { targetPlatforms: ['admixer'], formatKey: 'catfish' },
     expectEntry: 'body.html', expectJs: 'js/catfish.js',
-    expectExtra: ['js/body.js', 'index/index.html', 'index/settings.js', 'index/css/index.css']
+    expectExtra: ['js/body.js']
   }
 ];
 

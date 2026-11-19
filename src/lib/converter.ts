@@ -1,5 +1,4 @@
 import JSZip from 'jszip';
-import { ADMIXER_HARNESS_FILES, ADMIXER_HARNESS_FOLDERS } from './admixerHarness';
 import {
   acceptedSizes,
   acceptsSize,
@@ -284,11 +283,9 @@ async function buildPlatformPackage(layouts: SourceCreative[], platform: TargetP
   out.file(entryName, entryHtml);
 
   if (platform === 'admixer') {
+    // Тестового стенда index/ з прикладу Admixer у пакеті бути не повинно (фідбек
+    // Admixer, листопад 2026): архів — лише body.html, js/ та images/ у корені.
     out.file('js/body.js', buildAdmixerBodyJs(options.formatKey, source.metadata.height));
-    // Тестовий стенд index/ входить в обидва робочі еталони — без нього
-    // превʼю-тул Admixer не може зібрати Settings для креативу.
-    ADMIXER_HARNESS_FILES.forEach((file) => out.file(file.path, file.content));
-    ADMIXER_HARNESS_FOLDERS.forEach((folder) => out.folder(folder));
   }
 
   const emitsHalfscreenCss = platform === 'fusify' && options.formatKey === 'halfscreen';
@@ -302,7 +299,7 @@ async function buildPlatformPackage(layouts: SourceCreative[], platform: TargetP
     ...assetPlan.files.map((file) => file.outputPath),
     entryName,
     ...(externalJsName ? [externalJsName] : []),
-    ...(platform === 'admixer' ? ['js/body.js', ...ADMIXER_HARNESS_FILES.map((file) => file.path)] : []),
+    ...(platform === 'admixer' ? ['js/body.js'] : []),
     ...(emitsHalfscreenCss ? [FUSIFY_HALFSCREEN_CSS_FILE] : [])
   ];
   validation.push(...validatePlatformPackage(platform, outputEntries, entryHtml, blob.size, entryName, options));
@@ -567,17 +564,24 @@ function buildAdmixerHtml(html: string, mode: FormatKey): string {
   // обходить трекінг Admixer, а clickTag у head платформа не передає.
   const neutralized = neutralizeDirectClicks(html);
   const bodyInner = extractBodyInner(neutralized);
+  // Admixer вставляє на сторінку лише вміст <body>…</body>: усе, що лишиться в <head>,
+  // платформа відкине. Тож стилі (і скрипти креативу) переносимо на початок <body>.
   const headInner = extractHeadInner(neutralized);
+  const headAssets = [...headInner.matchAll(/<style\b[\s\S]*?<\/style>|<link\b[^>]*rel=["']stylesheet["'][^>]*>|<script\b[\s\S]*?<\/script>/gi)].map((match) => match[0]);
+  const headRest = headAssets.reduce((rest, tag) => rest.replace(tag, ''), headInner).trim();
   const isFullscreen = mode === 'fullscreen';
 
   // Розмітка в еталонах Admixer різна за форматом: fullscreen тримає креатив просто
   // в <body> (клік — по document.body) і має кнопку `admix-close-button` 20x20 у
   // лівому верхньому куті; halfscreen обгортає креатив у #container на всю площу
   // (клік — по ньому) з кнопкою `ad-close-button` 24x24 всередині контейнера.
+  // Кнопка має бути видимою (фідбек Admixer): іконка ✕ як HTML-сутність, бо кодування
+  // сторінки-хоста невідоме, а <meta charset> із head платформа не бере.
+  const closeIcon = (size: number) => `background:rgba(0,0,0,0.6);color:#fff;border-radius:50%;font:bold ${Math.round(size * 0.6)}px/${size}px Arial,Helvetica,sans-serif;text-align:center;user-select:none;`;
   const closeButton = isFullscreen
-    ? '<div class="admix-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 20px; height: 20px;left: 0px; top: 0px;z-index:9999;cursor:pointer;"></div>'
+    ? `<div class="admix-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 20px; height: 20px;left: 0px; top: 0px;z-index:9999;cursor:pointer;${closeIcon(20)}">&#10005;</div>`
     // CatFish: кнопка закриття з відступом мінімум 5px від правого верхнього кута.
-    : `<div class="ad-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 24px; height: 24px;${mode === 'catfish' ? 'right: 5px; top: 5px;' : 'right: 0px; top: 0px;'}z-index:9999;cursor:pointer;"></div>`;
+    : `<div class="ad-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 24px; height: 24px;${mode === 'catfish' ? 'right: 5px; top: 5px;' : 'right: 0px; top: 0px;'}z-index:9999;cursor:pointer;${closeIcon(24)}">&#10005;</div>`;
 
   const stage = isFullscreen
     ? `${bodyInner}
@@ -593,21 +597,29 @@ ${closeButton}
 <html>
 <head>
 <meta charset="UTF-8">
-${headInner}
+${headRest}
 </head>
 <body style="margin:0;overflow:hidden;">
 <script type="text/javascript" src="js/body.js"></script>
+${headAssets.join('\n')}
 ${stage}
 </body>
 </html>`;
 }
 
+// Admixer: висота CatFish ≤ 30% екрана; 150px вкладається навіть у ноутбуки.
+const ADMIXER_CATFISH_MAX_HEIGHT = 150;
+
 function buildAdmixerBodyJs(mode: FormatKey, creativeHeight?: number): string {
   const vertical = mode === 'fullscreen' ? 'center' : 'bottom';
   const width = '100%';
-  // CatFish кріпиться знизу з фіксованою піксельною висотою креативу (еталон: 200px),
-  // доки обмежують висоту 30% екрана. Фіксовані розміри поводяться як CatFish.
-  const height = mode === 'fullscreen' ? '100%' : mode === 'halfscreen' ? '30%' : `${creativeHeight || 200}px`;
+  // CatFish кріпиться знизу з фіксованою піксельною висотою. Admixer обмежує її 30%
+  // висоти екрана, і 200px на ноутбуках це вже перевищує — тож CatFish не вищий за
+  // 150px (сцена стискає креатив пропорційно). Фіксовані розміри — висота креативу.
+  const height = mode === 'fullscreen' ? '100%'
+    : mode === 'halfscreen' ? '30%'
+    : mode === 'catfish' ? `${Math.min(creativeHeight || ADMIXER_CATFISH_MAX_HEIGHT, ADMIXER_CATFISH_MAX_HEIGHT)}px`
+    : `${creativeHeight || 200}px`;
   return `globalHTML5Api.on('load', function () {
   function prevent(event) {
     if (!event) return;
@@ -637,8 +649,8 @@ function buildAdmixerBodyJs(mode: FormatKey, creativeHeight?: number): string {
   var clickArea = ${mode === 'fullscreen' ? 'document.body' : "document.getElementById('container') || document.body"};
   clickArea.onclick = function (event) {
     prevent(event);
-    globalHTML5Api.click();
-    globalHTML5Api.close(true);
+    globalHTML5Api.click();${mode === 'catfish' ? '' : `
+    globalHTML5Api.close(true);`}
   };
 
   document.body.onselectstart = function () { return false; };
@@ -836,7 +848,9 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
       { label: 'Admixer body.js API bridge is present', passed: entries.includes('js/body.js') },
       { label: 'Admixer globalHTML5Api load/init/click/close flow is present', passed: /globalHTML5Api/i.test(html) || entries.includes('js/body.js') },
       { label: 'No direct window.open click bypassing globalHTML5Api', passed: !/window\.open\((?:window\.)?clickTag/i.test(html) },
-      { label: 'Admixer index/ preview harness is bundled', passed: entries.includes('index/index.html') && entries.includes('index/settings.js') }
+      { label: 'Admixer archive has no index/ test harness', passed: !entries.some((entry) => entry.startsWith('index/')) },
+      { label: 'Admixer styles live inside <body> (platform reads only body content)', passed: !/<style\b|<link\b[^>]*stylesheet/i.test(extractHeadInner(html)) },
+      { label: 'Admixer close button has a visible icon', passed: /id="close"[^>]*>[^<]+<\/div>/.test(html) }
     );
   }
 

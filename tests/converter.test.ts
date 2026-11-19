@@ -420,11 +420,8 @@ describe('convertDv360Banner', () => {
     // Еталони викликають click() без аргументу і клікають по #container у halfscreen.
     expect(admixerBodyJs).toContain('globalHTML5Api.click();');
     expect(admixerBodyJs).toContain("document.getElementById('container')");
-    // Стенд index/ обовʼязковий: превʼю-тул Admixer читає з нього Settings.
-    expect(admixerZip.file('index/index.html')).toBeTruthy();
-    expect(admixerZip.file('index/settings.js')).toBeTruthy();
-    expect(admixerZip.file('index/css/index.css')).toBeTruthy();
-    expect(await admixerZip.file('index/index.html')!.async('text')).toContain('"TemplateId\\":52');
+    // Фідбек Admixer: тестового стенда index/ в архіві бути не повинно.
+    expect(Object.keys(admixerZip.files).some((path) => path.startsWith('index/'))).toBe(false);
     const allEntries = [
       ...Object.keys(umhZip.files),
       ...Object.keys(fusifyZip.files),
@@ -447,8 +444,24 @@ describe('convertDv360Banner', () => {
     const bodyJs = await zip.file('js/body.js')!.async('text');
     // Висота CatFish — фіксована піксельна висота креативу, кріплення знизу по центру.
     expect(bodyJs).toContain("vertical: 'bottom'");
-    expect(bodyJs).toContain("height: '600px'");
+    // Admixer: не більше 30% екрана — CatFish обмежено 150px.
+    expect(bodyJs).toContain("height: '150px'");
+    // Клік не закриває CatFish.
+    expect(bodyJs).toContain('globalHTML5Api.click();');
+    expect(bodyJs).not.toContain('close(true)');
     expect(output.validation.every((check) => check.passed)).toBe(true);
+
+    // Платформа бере лише вміст <body>: стилі мають бути там, а не в <head>.
+    const html = await zip.file('body.html')!.async('text');
+    const head = html.match(/<head>([\s\S]*?)<\/head>/)![1];
+    const body = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)![1];
+    expect(head).not.toMatch(/<style/);
+    expect(body).toMatch(/<style/);
+    // Видима іконка закриття з відступом 5px.
+    expect(body).toMatch(/id="close"[^>]*right: 5px; top: 5px;[^>]*>&#10005;<\/div>/);
+    // Архів зібрано з файлів, а не з теки: body.html і js/ у корені, без стенда index/.
+    const roots = new Set(Object.keys(zip.files).map((path) => path.split('/')[0]));
+    expect(roots.has('body.html') && roots.has('js') && !roots.has('index')).toBe(true);
   });
 
   it('emits body.html for the AdPartner halfscreen format', async () => {
