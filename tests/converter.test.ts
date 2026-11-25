@@ -313,6 +313,15 @@ describe('transformHtml for Admixer', () => {
     expect(html).toContain('width: 20px; height: 20px;left: 0px; top: 0px;');
   });
 
+  it('keeps the fullscreen/halfscreen close button transparent: the Admixer player draws its own ✕', () => {
+    for (const formatKey of ['fullscreen', 'halfscreen'] as const) {
+      const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey });
+      expect(html).toMatch(/id="close"[^>]*><\/div>/);
+      expect(html).not.toContain('&#10005;');
+      expect(html).not.toContain('rgba(0,0,0,0.6)');
+    }
+  });
+
   it('places the CatFish close button in the upper right corner with a 5px margin', () => {
     const html = transformHtml(dv360Html, 'admixer', { ...baseOptions, formatKey: 'catfish' });
 

@@ -575,13 +575,18 @@ function buildAdmixerHtml(html: string, mode: FormatKey): string {
   // в <body> (клік — по document.body) і має кнопку `admix-close-button` 20x20 у
   // лівому верхньому куті; halfscreen обгортає креатив у #container на всю площу
   // (клік — по ньому) з кнопкою `ad-close-button` 24x24 всередині контейнера.
-  // Кнопка має бути видимою (фідбек Admixer): іконка ✕ як HTML-сутність, бо кодування
-  // сторінки-хоста невідоме, а <meta charset> із head платформа не бере.
-  const closeIcon = (size: number) => `background:rgba(0,0,0,0.6);color:#fff;border-radius:50%;font:bold ${Math.round(size * 0.6)}px/${size}px Arial,Helvetica,sans-serif;text-align:center;user-select:none;`;
+  // CatFish: кнопка має бути видимою (фідбек Admixer, Catfish API) — іконка ✕ як
+  // HTML-сутність, бо кодування сторінки-хоста невідоме, а <meta charset> із head
+  // платформа не бере. Fullscreen/halfscreen лишають прозору кнопку: там плеєр Admixer
+  // малює власний ✕, і видима іконка дублювала б його (баг, листопад 2026).
+  const closeIcon = mode === 'catfish'
+    ? 'background:rgba(0,0,0,0.6);color:#fff;border-radius:50%;font:bold 14px/24px Arial,Helvetica,sans-serif;text-align:center;user-select:none;'
+    : '';
+  const closeContent = mode === 'catfish' ? '&#10005;' : '';
   const closeButton = isFullscreen
-    ? `<div class="admix-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 20px; height: 20px;left: 0px; top: 0px;z-index:9999;cursor:pointer;${closeIcon(20)}">&#10005;</div>`
+    ? '<div class="admix-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 20px; height: 20px;left: 0px; top: 0px;z-index:9999;cursor:pointer;"></div>'
     // CatFish: кнопка закриття з відступом мінімум 5px від правого верхнього кута.
-    : `<div class="ad-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 24px; height: 24px;${mode === 'catfish' ? 'right: 5px; top: 5px;' : 'right: 0px; top: 0px;'}z-index:9999;cursor:pointer;${closeIcon(24)}">&#10005;</div>`;
+    : `<div class="ad-close-button" id="close" aria-label="Close ad" style="position: absolute; width: 24px; height: 24px;${mode === 'catfish' ? 'right: 5px; top: 5px;' : 'right: 0px; top: 0px;'}z-index:9999;cursor:pointer;${closeIcon}">${closeContent}</div>`;
 
   const stage = isFullscreen
     ? `${bodyInner}
@@ -850,7 +855,9 @@ function validatePlatformPackage(platform: TargetPlatform, entries: string[], ht
       { label: 'No direct window.open click bypassing globalHTML5Api', passed: !/window\.open\((?:window\.)?clickTag/i.test(html) },
       { label: 'Admixer archive has no index/ test harness', passed: !entries.some((entry) => entry.startsWith('index/')) },
       { label: 'Admixer styles live inside <body> (platform reads only body content)', passed: !/<style\b|<link\b[^>]*stylesheet/i.test(extractHeadInner(html)) },
-      { label: 'Admixer close button has a visible icon', passed: /id="close"[^>]*>[^<]+<\/div>/.test(html) }
+      options.formatKey === 'catfish'
+        ? { label: 'Admixer CatFish close button has a visible icon', passed: /id="close"[^>]*>[^<]+<\/div>/.test(html) }
+        : { label: 'Admixer close button is transparent (the player draws its own ✕)', passed: /id="close"[^>]*><\/div>/.test(html) }
     );
   }
 
